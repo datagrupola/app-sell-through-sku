@@ -1,0 +1,47 @@
+name: Sync Bsale SKU Traceability
+
+on:
+  workflow_dispatch:
+    inputs:
+      office_ids:
+        description: "Office IDs separados por coma"
+        required: true
+        default: "2"
+      max_reception_pages:
+        description: "Páginas de recepciones a procesar por office. Prueba inicial: 1"
+        required: true
+        default: "1"
+      max_details_per_reception:
+        description: "Máximo de detalles por recepción. Prueba inicial: 300"
+        required: true
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    env:
+      BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OFFICE_IDS: ${{ inputs.office_ids }}
+      MAX_RECEPTION_PAGES: ${{ inputs.max_reception_pages }}
+      MAX_DETAILS_PER_RECEPTION: ${{ inputs.max_details_per_reception }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Bsale sync
+        run: python src/main.py
