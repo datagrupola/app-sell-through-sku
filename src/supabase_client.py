@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -21,31 +22,46 @@ class SupabaseRestClient:
         table: str,
         rows: List[Dict[str, Any]],
         on_conflict: Optional[str] = None,
+        chunk_size: int = 200,
     ) -> None:
         if not rows:
             return
 
-        url = f"{self.base_url}/rest/v1/{table}"
-        params = {}
-        if on_conflict:
-            params["on_conflict"] = on_conflict
+        total = len(rows)
 
-        headers = {
-            "Prefer": "resolution=merge-duplicates,return=minimal"
-        }
+        for start in range(0, total, chunk_size):
+            chunk = rows[start:start + chunk_size]
 
-        response = self.session.post(
-            url,
-            params=params,
-            headers=headers,
-            json=rows,
-            timeout=60,
-        )
+            url = f"{self.base_url}/rest/v1/{table}"
+            params = {}
 
-        if response.status_code >= 400:
-            raise RuntimeError(
-                f"Supabase upsert error {response.status_code} on {table}: {response.text[:2000]}"
+            if on_conflict:
+                params["on_conflict"] = on_conflict
+
+            headers = {
+                "Prefer": "resolution=merge-duplicates,return=minimal"
+            }
+
+            response = self.session.post(
+                url,
+                params=params,
+                headers=headers,
+                json=chunk,
+                timeout=180,
             )
+
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Supabase upsert error {response.status_code} on {table}: "
+                    f"{response.text[:2000]}"
+                )
+
+            print(
+                f"[supabase] upsert table={table} "
+                f"rows={start + len(chunk)}/{total}"
+            )
+
+            time.sleep(0.05)
 
     def upsert_one(
         self,
@@ -53,4 +69,9 @@ class SupabaseRestClient:
         row: Dict[str, Any],
         on_conflict: Optional[str] = None,
     ) -> None:
-        self.upsert(table=table, rows=[row], on_conflict=on_conflict)
+        self.upsert(
+            table=table,
+            rows=[row],
+            on_conflict=on_conflict,
+            chunk_size=1,
+        )
