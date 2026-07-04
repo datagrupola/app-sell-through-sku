@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime, timezone, date, time
+from datetime import datetime, timezone, date, time, timedelta
 from typing import Any, Dict, List, Optional, Set
 
 from bsale_client import BsaleClient
@@ -252,7 +252,7 @@ def sync_documents_for_type(
                     detail_rows.append(drow)
 
         db.upsert("bsale_variants", variant_rows, on_conflict="variant_id")
-        db.upsert("bsale_sku_aliases", alias_rows, on_conflict="variant_id,sku_norm,barcode_norm")
+        db.insert_ignore("bsale_sku_aliases", alias_rows, on_conflict="variant_id,sku_norm,barcode_norm")
         db.upsert("bsale_documents_raw", document_rows, on_conflict="document_id")
         db.upsert("bsale_document_details", detail_rows, on_conflict="document_detail_id")
 
@@ -271,6 +271,18 @@ def sync_documents_for_type(
     print(f"[documents] done office={office_id} document_type={document_type_id}")
 
 
+def parse_date(date_text: str) -> date:
+    y, m, d = [int(part) for part in date_text.split("-")]
+    return date(y, m, d)
+
+
+def iter_dates(start_day: date, end_day: date):
+    current = start_day
+    while current <= end_day:
+        yield current
+        current = current + timedelta(days=1)
+
+
 def main() -> None:
     office_ids = [
         int(value.strip())
@@ -284,32 +296,42 @@ def main() -> None:
         if value.strip()
     ]
 
-    start_date = os.getenv("START_DATE", "2025-09-13")
-    end_date = os.getenv("END_DATE") or datetime.now(timezone.utc).date().isoformat()
+    start_date_text = os.getenv("START_DATE", "2025-09-13")
+    end_date_text = os.getenv("END_DATE") or datetime.now(timezone.utc).date().isoformat()
     max_pages = int(os.getenv("MAX_DOCUMENT_PAGES_PER_TYPE", "0"))
 
-    start_unix = date_to_unix_utc(start_date, end_of_day=False)
-    end_unix = date_to_unix_utc(end_date, end_of_day=True)
+    start_day = parse_date(start_date_text)
+    end_day = parse_date(end_date_text)
 
     print(
-        f"[documents] range start_date={start_date} end_date={end_date} "
-        f"start_unix={start_unix} end_unix={end_unix}"
+        f"[documents] daily sync start_date={start_date_text} "
+        f"end_date={end_date_text} max_pages_per_day={max_pages}"
     )
 
     bsale = BsaleClient()
     db = SupabaseRestClient()
 
     for office_id in office_ids:
-        for document_type_id in document_type_ids:
-            sync_documents_for_type(
-                bsale=bsale,
-                db=db,
-                office_id=office_id,
-                document_type_id=document_type_id,
-                start_unix=start_unix,
-                end_unix=end_unix,
-                max_pages=max_pages,
+        for current_day in iter_dates(start_day, end_day):
+            day_text = current_day.isoformat()
+            start_unix = date_to_unix_utc(day_text, end_of_day=False)
+            end_unix = date_to_unix_utc(day_text, end_of_day=True)
+
+            print(
+                f"[documents] day={day_text} office={office_id} "
+                f"start_unix={start_unix} end_unix={end_unix}"
             )
+
+            for document_type_id in document_type_ids:
+                sync_documents_for_type(
+                    bsale=bsale,
+                    db=db,
+                    office_id=office_id,
+                    document_type_id=document_type_id,
+                    start_unix=start_unix,
+                    end_unix=end_unix,
+                    max_pages=max_pages,
+                )
 
     print("[documents] finished")
 
