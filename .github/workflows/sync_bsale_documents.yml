@@ -1,0 +1,57 @@
+name: Sync Bsale Documents
+
+on:
+  workflow_dispatch:
+    inputs:
+      office_ids:
+        description: "Office IDs separados por coma"
+        required: true
+        default: "2"
+      document_type_ids:
+        description: "Tipos de documento separados por coma. LAS AMERICAS: ventas 40, devoluciones 41"
+        required: true
+        default: "40,41"
+      start_date:
+        description: "Fecha inicial YYYY-MM-DD"
+        required: true
+        default: "2025-09-13"
+      end_date:
+        description: "Fecha final YYYY-MM-DD. Vacío = hoy UTC"
+        required: false
+        default: ""
+      max_document_pages_per_type:
+        description: "0 = todas las páginas. Prueba inicial: 20"
+        required: true
+        default: "20"
+
+permissions:
+  contents: read
+
+jobs:
+  sync-documents:
+    runs-on: ubuntu-latest
+
+    env:
+      BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OFFICE_IDS: ${{ inputs.office_ids }}
+      DOCUMENT_TYPE_IDS: ${{ inputs.document_type_ids }}
+      START_DATE: ${{ inputs.start_date }}
+      END_DATE: ${{ inputs.end_date }}
+      MAX_DOCUMENT_PAGES_PER_TYPE: ${{ inputs.max_document_pages_per_type }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Bsale documents sync
+        run: python src/sync_documents.py

@@ -111,3 +111,25 @@ class BsaleClient:
 
         print(f"[reception_details] reception={reception_id} read={len(items)}")
         return items
+    
+        def list_documents_page(
+        self,
+        office_id: int,
+        document_type_id: int,
+        start_unix: int,
+        end_unix: int,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+            return self.get(
+                "documents.json",
+                params={
+                    "officeid": office_id,
+                    "state": 0,
+                    "documenttypeid": document_type_id,
+                    "emissiondaterange": f"[{start_unix},{end_unix}]",
+                    "expand": "[office,document_type,details]",
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
