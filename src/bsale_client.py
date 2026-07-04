@@ -133,3 +133,55 @@ class BsaleClient:
                 "offset": offset,
             },
         )
+    def list_consumptions_page(
+        self,
+        office_id: int,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        return self.get(
+            "stocks/consumptions.json",
+            params={
+                "officeid": office_id,
+                "expand": "[office,details]",
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+
+    def list_consumption_details(
+        self,
+        consumption_id: int,
+        limit: int = 50,
+        max_details: int = 300,
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        offset = 0
+
+        while True:
+            page = self.get(
+                f"stocks/consumptions/{consumption_id}/details.json",
+                params={
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+
+            page_items = page.get("items", [])
+            items.extend(page_items)
+
+            count = int(page.get("count", 0))
+            offset += limit
+
+            if max_details > 0 and len(items) >= max_details:
+                print(
+                    f"[consumption_details] consumption={consumption_id} "
+                    f"truncated={len(items)}/{count} max_details={max_details}"
+                )
+                return items[:max_details]
+
+            if offset >= count or not page_items:
+                break
+
+        print(f"[consumption_details] consumption={consumption_id} read={len(items)}")
+        return items

@@ -1,0 +1,47 @@
+name: Sync Bsale Consumptions
+
+on:
+  workflow_dispatch:
+    inputs:
+      office_ids:
+        description: "Office IDs separados por coma"
+        required: true
+        default: "2"
+      max_consumption_pages:
+        description: "0 = todas las páginas. Prueba inicial: 5"
+        required: true
+        default: "5"
+      max_details_per_consumption:
+        description: "Máximo de detalles por consumo"
+        required: true
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  sync-consumptions:
+    runs-on: ubuntu-latest
+
+    env:
+      BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OFFICE_IDS: ${{ inputs.office_ids }}
+      MAX_CONSUMPTION_PAGES: ${{ inputs.max_consumption_pages }}
+      MAX_DETAILS_PER_CONSUMPTION: ${{ inputs.max_details_per_consumption }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Bsale consumptions sync
+        run: python src/sync_consumptions.py
