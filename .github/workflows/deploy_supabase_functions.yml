@@ -41,3 +41,7 @@ jobs:
       - name: Deploy request-live-traceability
         run: |
           supabase functions deploy request-live-traceability --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Deploy calculate-sell-through-live
+        run: |
+          supabase functions deploy calculate-sell-through-live --project-ref "$SUPABASE_PROJECT_REF"
