@@ -48,21 +48,31 @@
           <button id="search-button" type="submit">Calcular</button>
         </form>
 
-        <div id="status" class="status"></div>
+        <div class="actions-row">
+          <div id="status" class="status"></div>
+          <button id="pdf-button" class="secondary-button" type="button" hidden>
+            Descargar PDF
+          </button>
+        </div>
+
         <div id="result" class="result"></div>
       </section>
     </main>
 
     <script>
       import { supabase } from '../lib/supabase.js';
+      import { jsPDF } from 'jspdf';
 
       const form = document.querySelector('#search-form');
       const input = document.querySelector('#search-input');
       const officeSelect = document.querySelector('#office-select');
       const lookbackSelect = document.querySelector('#lookback-select');
       const button = document.querySelector('#search-button');
+      const pdfButton = document.querySelector('#pdf-button');
       const status = document.querySelector('#status');
       const result = document.querySelector('#result');
+
+      let lastCalculation = null;
 
       const money = (value) => {
         return Number(value || 0).toLocaleString('es-MX', {
@@ -82,6 +92,10 @@
         return `${number(value)}%`;
       };
 
+      const clamp = (value, min, max) => {
+        return Math.max(min, Math.min(max, Number(value || 0)));
+      };
+
       const text = (value) => {
         if (value === null || value === undefined || value === '') return '—';
         return String(value)
@@ -96,14 +110,362 @@
         status.textContent = message;
       };
 
+      const setPdfAvailable = (available) => {
+        pdfButton.hidden = !available;
+      };
+
+      const fileSafe = (value) => {
+        return String(value || 'sku')
+          .trim()
+          .replace(/[^a-z0-9-_]+/gi, '-')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '')
+          .toLowerCase();
+      };
+
+      const downloadPdf = async () => {
+        if (!lastCalculation) return;
+
+        pdfButton.disabled = true;
+        const originalText = pdfButton.textContent;
+        pdfButton.textContent = 'Generando PDF...';
+
+        try {
+          const data = lastCalculation;
+          const stock = data.stock_matches?.[0] || {};
+          const summary = data.summary || {};
+          const reception = data.last_reception || {};
+          const movements = data.movements || [];
+          const scanStats = data.scan_stats || {};
+
+          const pdf = new jsPDF({
+            orientation: 'landscape',
+            unit: 'pt',
+            format: 'a4',
+          });
+
+          const pageWidth = pdf.internal.pageSize.getWidth();
+          const pageHeight = pdf.internal.pageSize.getHeight();
+          const margin = 34;
+          const dark = '#172033';
+          const muted = '#64748b';
+          const border = '#dbe3ef';
+          const soft = '#f8fafc';
+          const green = '#166534';
+          const blue = '#2563eb';
+
+          let y = margin;
+
+          const safe = (value) => {
+            if (value === null || value === undefined || value === '') return '—';
+            return String(value);
+          };
+
+          const fmt = (value) => {
+            return Number(value || 0).toLocaleString('es-MX', {
+              maximumFractionDigits: 2,
+            });
+          };
+
+          const fmtMoney = (value) => {
+            return Number(value || 0).toLocaleString('es-MX', {
+              style: 'currency',
+              currency: 'MXN',
+            });
+          };
+
+          const addPageIfNeeded = (neededHeight) => {
+            if (y + neededHeight <= pageHeight - margin) return;
+            pdf.addPage();
+            y = margin;
+          };
+
+          const sectionTitle = (eyebrow, title) => {
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(8);
+            pdf.setTextColor(muted);
+            pdf.text(eyebrow.toUpperCase(), margin, y);
+            y += 14;
+
+            pdf.setFontSize(15);
+            pdf.setTextColor(dark);
+            pdf.text(title, margin, y);
+            y += 18;
+          };
+
+          const card = (x, yPos, w, h, label, value, note = '') => {
+            pdf.setDrawColor(border);
+            pdf.setFillColor(soft);
+            pdf.roundedRect(x, yPos, w, h, 10, 10, 'FD');
+
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(8);
+            pdf.setTextColor(muted);
+            pdf.text(label, x + 12, yPos + 18);
+
+            pdf.setFontSize(22);
+            pdf.setTextColor(dark);
+            pdf.text(safe(value), x + 12, yPos + 45);
+
+            if (note) {
+              pdf.setFontSize(8);
+              pdf.setTextColor(muted);
+              pdf.text(safe(note), x + 12, yPos + 62, { maxWidth: w - 24 });
+            }
+          };
+
+          const pill = (label, x, yPos) => {
+            pdf.setFillColor('#dcfce7');
+            pdf.roundedRect(x, yPos - 11, 86, 18, 9, 9, 'F');
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(7);
+            pdf.setTextColor(green);
+            pdf.text(label, x + 9, yPos + 1);
+          };
+
+          // Header
+          pdf.setFont('helvetica', 'bold');
+          pdf.setTextColor(muted);
+          pdf.setFontSize(8);
+          pdf.text('CHINO REGALADO · BSALE LIVE', margin, y);
+
+          pill('Calculado live', pageWidth - margin - 86, y);
+          y += 26;
+
+          pdf.setTextColor(dark);
+          pdf.setFontSize(28);
+          pdf.text('Reporte sell-through por SKU', margin, y);
+          y += 24;
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(10);
+          pdf.setTextColor(muted);
+          pdf.text(
+            `SKU: ${safe(stock.sku || data.query)}   ·   Sucursal: ${safe(stock.office_name)}   ·   Consulta: ${new Date().toLocaleString('es-MX')}`,
+            margin,
+            y
+          );
+          y += 26;
+
+          // Main result box
+          const boxX = margin;
+          const boxY = y;
+          const boxW = pageWidth - margin * 2;
+          const boxH = 118;
+
+          pdf.setDrawColor(border);
+          pdf.setFillColor('#ffffff');
+          pdf.roundedRect(boxX, boxY, boxW, boxH, 14, 14, 'FD');
+
+          // Dark sell-through panel
+          pdf.setFillColor(dark);
+          pdf.roundedRect(boxX + 14, boxY + 14, 180, 90, 12, 12, 'F');
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(31);
+          pdf.setTextColor('#ffffff');
+          pdf.text(`${fmt(summary.sell_through_pct)}%`, boxX + 30, boxY + 55);
+
+          pdf.setFontSize(9);
+          pdf.text('Sell-through', boxX + 32, boxY + 74);
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setTextColor('#cbd5e1');
+          pdf.text('desde última recepción', boxX + 32, boxY + 88);
+
+          // Progress bar
+          const progressX = boxX + 215;
+          const progressY = boxY + 24;
+          const progressW = boxW - 235;
+          const progressH = 12;
+          const percent = Math.max(0, Math.min(100, Number(summary.sell_through_pct || 0)));
+
+          pdf.setFillColor('#e2e8f0');
+          pdf.roundedRect(progressX, progressY, progressW, progressH, 6, 6, 'F');
+          pdf.setFillColor(blue);
+          pdf.roundedRect(progressX, progressY, progressW * (percent / 100), progressH, 6, 6, 'F');
+
+          const kpiW = (progressW - 48) / 4;
+          const kpiY = boxY + 48;
+
+          card(progressX, kpiY, kpiW, 56, 'Recibidas', fmt(summary.piezas_recibidas_ultima_recepcion), `Recepción ${safe(reception.reception_id)}`);
+          card(progressX + kpiW + 16, kpiY, kpiW, 56, 'Vendidas', fmt(summary.piezas_vendidas_desde_ultima_recepcion), `Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}`);
+          card(progressX + (kpiW + 16) * 2, kpiY, kpiW, 56, 'Stock actual', fmt(summary.stock_actual), `Disponible: ${fmt(summary.stock_disponible)}`);
+          card(progressX + (kpiW + 16) * 3, kpiY, kpiW, 56, 'Venta neta', fmt(summary.piezas_netas_venta_desde_ultima_recepcion), `Desde ${safe(reception.movement_date)}`);
+
+          y += boxH + 24;
+
+          // Two columns: reception + timeline
+          const colGap = 18;
+          const leftW = 285;
+          const rightW = boxW - leftW - colGap;
+          const colY = y;
+          const colH = 190;
+
+          pdf.setDrawColor(border);
+          pdf.setFillColor('#ffffff');
+          pdf.roundedRect(margin, colY, leftW, colH, 14, 14, 'FD');
+          pdf.roundedRect(margin + leftW + colGap, colY, rightW, colH, 14, 14, 'FD');
+
+          // Reception
+          let rx = margin + 16;
+          let ry = colY + 22;
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor(muted);
+          pdf.text('ÚLTIMA RECEPCIÓN', rx, ry);
+          ry += 18;
+
+          pdf.setFontSize(16);
+          pdf.setTextColor(dark);
+          pdf.text('Origen del cálculo', rx, ry);
+          ry += 28;
+
+          const receptionRows = [
+            ['Fecha', safe(reception.movement_date)],
+            ['Recepción', safe(reception.reception_id)],
+            ['Piezas', fmt(reception.quantity)],
+            ['Costo', fmtMoney(reception.cost)],
+            ['Stock al recibir', fmt(reception.variant_stock)],
+          ];
+
+          pdf.setFontSize(9);
+          for (const [label, value] of receptionRows) {
+            pdf.setTextColor(muted);
+            pdf.setFont('helvetica', 'bold');
+            pdf.text(label, rx, ry);
+            pdf.setTextColor(dark);
+            pdf.text(value, rx + 92, ry);
+            ry += 17;
+          }
+
+          pdf.setTextColor(muted);
+          pdf.setFont('helvetica', 'bold');
+          pdf.text('Nota', rx, ry);
+          ry += 14;
+          pdf.setTextColor(dark);
+          pdf.text(safe(reception.note), rx, ry, { maxWidth: leftW - 32 });
+
+          // Timeline
+          let tx = margin + leftW + colGap + 16;
+          let ty = colY + 22;
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor(muted);
+          pdf.text('MOVIMIENTOS', tx, ty);
+          ty += 18;
+
+          pdf.setFontSize(16);
+          pdf.setTextColor(dark);
+          pdf.text('Línea de tiempo desde última recepción', tx, ty);
+          ty += 22;
+
+          const timelineMax = Math.min(movements.length, 5);
+          for (let i = 0; i < timelineMax; i++) {
+            const item = movements[i];
+            const isEntry = item.movement_group === 'ENTRADA';
+
+            pdf.setFillColor(isEntry ? '#16a34a' : '#2563eb');
+            pdf.circle(tx + 5, ty - 4, 4, 'F');
+
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(9);
+            pdf.setTextColor(dark);
+            pdf.text(safe(item.movement_date), tx + 18, ty);
+
+            pdf.text(safe(item.movement_group), tx + 104, ty);
+
+            pdf.setFontSize(14);
+            pdf.text(fmt(item.quantity_signed ?? item.quantity), tx + rightW - 50, ty);
+
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(8);
+            pdf.setTextColor(muted);
+            pdf.text(safe(item.note), tx + 104, ty + 13, { maxWidth: rightW - 170 });
+
+            ty += 32;
+          }
+
+          if (movements.length > timelineMax) {
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(8);
+            pdf.setTextColor(muted);
+            pdf.text(`+ ${movements.length - timelineMax} movimientos adicionales`, tx + 18, ty);
+          }
+
+          y += colH + 24;
+
+          // Compact coverage footer
+          const footerY = pageHeight - margin - 50;
+
+          pdf.setDrawColor(border);
+          pdf.setFillColor('#f8fafc');
+          pdf.roundedRect(margin, footerY, boxW, 50, 10, 10, 'FD');
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor(muted);
+          pdf.text('COBERTURA REVISADA', margin + 12, footerY + 16);
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(8);
+          pdf.setTextColor(dark);
+
+          const coverageLine =
+            `Rango: ${safe(data.start_date)} a ${safe(data.end_date)}  ·  ` +
+            `Recepciones revisadas: ${fmt(scanStats.receptions?.receptions_seen)}  ·  ` +
+            `Recepciones con SKU: ${fmt(scanStats.receptions?.matches)}  ·  ` +
+            `Documentos revisados: ${fmt(scanStats.documents?.documents_seen)}  ·  ` +
+            `Líneas revisadas: ${fmt(scanStats.documents?.details_seen)}  ·  ` +
+            `Ventas/devoluciones del SKU: ${fmt(scanStats.documents?.matches)}`;
+
+          pdf.text(coverageLine, margin + 12, footerY + 33, { maxWidth: boxW - 24 });
+
+          const sku = input.value.trim() || 'sku';
+          const date = new Date().toISOString().slice(0, 10);
+          pdf.save(`sell-through-${fileSafe(sku)}-${date}.pdf`);
+        } finally {
+          pdfButton.disabled = false;
+          pdfButton.textContent = originalText;
+        }
+      };
+
+      pdfButton.addEventListener('click', downloadPdf);
+
       const movementClass = (group) => {
-        if (group === 'ENTRADA') return 'movement-entry';
-        if (group === 'VENTA') return 'movement-sale';
-        if (group === 'DEVOLUCION') return 'movement-return';
+        if (group === 'ENTRADA') return 'timeline-entry';
+        if (group === 'VENTA') return 'timeline-sale';
+        if (group === 'DEVOLUCION') return 'timeline-return';
         return '';
       };
 
+      const movementLabel = (item) => {
+        if (item.movement_group === 'ENTRADA') return 'Entrada';
+        if (item.movement_group === 'VENTA') return 'Venta';
+        if (item.movement_group === 'DEVOLUCION') return 'Devolución';
+        return text(item.movement_group);
+      };
+
+      const movementReference = (item) => {
+        if (item.document_id) return `Documento ${item.note || item.document_id}`;
+        if (item.reception_id) return `Recepción ${item.reception_id}`;
+        return item.note || 'Movimiento';
+      };
+
+      const sellThroughLevel = (value) => {
+        const numeric = Number(value || 0);
+
+        if (numeric >= 80) return 'Alto';
+        if (numeric >= 50) return 'Medio';
+        if (numeric >= 20) return 'Bajo';
+        return 'Inicial';
+      };
+
       const renderNotFound = (data) => {
+        setPdfAvailable(true);
+
         result.innerHTML = `
           <section class="section-card">
             <div class="section-header">
@@ -130,6 +492,8 @@
       const renderNoReception = (data) => {
         const stock = data.stock_matches?.[0];
         const summary = data.summary || {};
+
+        setPdfAvailable(true);
 
         result.innerHTML = `
           <section class="section-card">
@@ -170,6 +534,8 @@
       };
 
       const renderData = (data) => {
+        lastCalculation = data;
+
         if (!data?.found) {
           renderNotFound(data);
           return;
@@ -186,6 +552,12 @@
         const movements = data.movements || [];
         const scanStats = data.scan_stats || {};
 
+        const sellThroughValue = Number(summary.sell_through_pct || 0);
+        const sellThroughClamped = clamp(sellThroughValue, 0, 100);
+        const sellThroughStatus = sellThroughLevel(sellThroughValue);
+
+        setPdfAvailable(true);
+
         result.innerHTML = `
           <section class="section-card">
             <div class="section-header">
@@ -196,42 +568,51 @@
               <span class="badge success">Calculado desde Bsale</span>
             </div>
 
-            <div class="summary-grid">
-              <article class="card primary">
-                <span>Sell-through</span>
-                <strong>${pct(summary.sell_through_pct)}</strong>
-                <small>Desde última recepción</small>
+            <div class="result-layout">
+              <article class="sellthrough-panel">
+                <div class="gauge" style="--value: ${sellThroughClamped};">
+                  <div class="gauge-inner">
+                    <strong>${pct(summary.sell_through_pct)}</strong>
+                    <span>${sellThroughStatus}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <p class="metric-label">Sell-through desde última recepción</p>
+                  <p class="metric-help">
+                    ${number(summary.piezas_netas_venta_desde_ultima_recepcion)}
+                    piezas netas vendidas de
+                    ${number(summary.piezas_recibidas_ultima_recepcion)}
+                    recibidas.
+                  </p>
+                </div>
               </article>
 
-              <article class="card">
-                <span>Piezas recibidas</span>
-                <strong>${number(summary.piezas_recibidas_ultima_recepcion)}</strong>
-                <small>Recepción ${text(reception.reception_id)}</small>
-              </article>
+              <div class="summary-grid compact">
+                <article class="card">
+                  <span>Piezas recibidas</span>
+                  <strong>${number(summary.piezas_recibidas_ultima_recepcion)}</strong>
+                  <small>Recepción ${text(reception.reception_id)}</small>
+                </article>
 
-              <article class="card">
-                <span>Piezas vendidas</span>
-                <strong>${number(summary.piezas_vendidas_desde_ultima_recepcion)}</strong>
-                <small>Devueltas: ${number(summary.piezas_devueltas_desde_ultima_recepcion)}</small>
-              </article>
+                <article class="card">
+                  <span>Piezas vendidas</span>
+                  <strong>${number(summary.piezas_vendidas_desde_ultima_recepcion)}</strong>
+                  <small>Devueltas: ${number(summary.piezas_devueltas_desde_ultima_recepcion)}</small>
+                </article>
 
-              <article class="card">
-                <span>Stock actual</span>
-                <strong>${number(summary.stock_actual)}</strong>
-                <small>Disponible: ${number(summary.stock_disponible)}</small>
-              </article>
+                <article class="card">
+                  <span>Stock actual</span>
+                  <strong>${number(summary.stock_actual)}</strong>
+                  <small>Disponible: ${number(summary.stock_disponible)}</small>
+                </article>
 
-              <article class="card">
-                <span>Venta neta piezas</span>
-                <strong>${number(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong>
-                <small>Desde ${text(reception.movement_date)}</small>
-              </article>
-
-              <article class="card">
-                <span>Costo recepción</span>
-                <strong>${money(reception.cost)}</strong>
-                <small>Variant ID: ${text(stock?.variant_id)}</small>
-              </article>
+                <article class="card">
+                  <span>Venta neta piezas</span>
+                  <strong>${number(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong>
+                  <small>Desde ${text(reception.movement_date)}</small>
+                </article>
+              </div>
             </div>
           </section>
 
@@ -250,10 +631,6 @@
                 <dd>${text(reception.reception_id)}</dd>
               </div>
               <div>
-                <dt>Tipo entrada</dt>
-                <dd>${text(reception.movement_type)}</dd>
-              </div>
-              <div>
                 <dt>Piezas recibidas</dt>
                 <dd>${number(reception.quantity)}</dd>
               </div>
@@ -265,7 +642,7 @@
                 <dt>Stock al recibir</dt>
                 <dd>${number(reception.variant_stock)}</dd>
               </div>
-              <div>
+              <div class="wide">
                 <dt>Nota</dt>
                 <dd>${text(reception.note)}</dd>
               </div>
@@ -283,26 +660,28 @@
 
             ${
               movements.length
-                ? `<div class="timeline">
+                ? `<div class="timeline-line">
                     ${movements
                       .map(
                         (item) => `
-                          <article class="movement ${movementClass(item.movement_group)}">
-                            <div class="movement-header">
-                              <div>
-                                <strong>${text(item.movement_group)}</strong>
-                                <span>${text(item.movement_type)}</span>
-                              </div>
-                              <div class="movement-numbers">
-                                <span>${text(item.movement_date)}</span>
-                                <strong>${number(item.quantity_signed ?? item.quantity)}</strong>
-                              </div>
+                          <article class="timeline-item ${movementClass(item.movement_group)}">
+                            <div class="timeline-dot"></div>
+
+                            <div class="timeline-date">
+                              <strong>${text(item.movement_date)}</strong>
                             </div>
-                            <p>${text(item.note)}</p>
-                            <small>
-                              ${item.document_id ? `Documento ID: ${text(item.document_id)}` : ''}
-                              ${item.reception_id ? `Recepción ID: ${text(item.reception_id)}` : ''}
-                            </small>
+
+                            <div class="timeline-content">
+                              <div class="timeline-top">
+                                <div>
+                                  <strong>${movementLabel(item)}</strong>
+                                  <span>${text(movementReference(item))}</span>
+                                </div>
+                                <strong class="timeline-qty">${number(item.quantity_signed ?? item.quantity)}</strong>
+                              </div>
+
+                              <p>${text(item.note)}</p>
+                            </div>
                           </article>
                         `
                       )
@@ -315,43 +694,56 @@
           <section class="section-card muted-card">
             <div class="section-header">
               <div>
-                <p class="section-kicker">Diagnóstico técnico</p>
-                <h2>Cobertura revisada</h2>
+                <p class="section-kicker">Cobertura revisada</p>
+                <h2>Qué se revisó en Bsale</h2>
               </div>
-              <span class="badge neutral">Live</span>
+              <span class="badge neutral">Diagnóstico</span>
             </div>
 
-            <dl>
-              <div>
-                <dt>Rango consultado</dt>
-                <dd>${text(data.start_date)} a ${text(data.end_date)}</dd>
-              </div>
-              <div>
-                <dt>Páginas recepciones</dt>
-                <dd>${number(scanStats.receptions?.pages)}</dd>
-              </div>
-              <div>
-                <dt>Matches recepciones</dt>
-                <dd>${number(scanStats.receptions?.matches)}</dd>
-              </div>
-              <div>
-                <dt>Páginas documentos</dt>
-                <dd>${number(scanStats.documents?.pages)}</dd>
-              </div>
-              <div>
-                <dt>Matches documentos</dt>
-                <dd>${number(scanStats.documents?.matches)}</dd>
-              </div>
-              <div>
-                <dt>Detalles documentos</dt>
-                <dd>${number(scanStats.documents?.details_seen)}</dd>
-              </div>
-            </dl>
+            <div class="coverage-grid">
+              <article class="coverage-item">
+                <span>Rango consultado</span>
+                <strong>${text(data.start_date)} a ${text(data.end_date)}</strong>
+                <p>Periodo usado para encontrar la última recepción y las ventas posteriores.</p>
+              </article>
+
+              <article class="coverage-item">
+                <span>Recepciones revisadas</span>
+                <strong>${number(scanStats.receptions?.receptions_seen)}</strong>
+                <p>Recepciones de Bsale leídas para buscar la última entrada de este SKU.</p>
+              </article>
+
+              <article class="coverage-item">
+                <span>Recepciones con este SKU</span>
+                <strong>${number(scanStats.receptions?.matches)}</strong>
+                <p>Coincidencias encontradas del SKU dentro de las recepciones revisadas.</p>
+              </article>
+
+              <article class="coverage-item">
+                <span>Documentos de venta revisados</span>
+                <strong>${number(scanStats.documents?.documents_seen)}</strong>
+                <p>Documentos revisados desde la fecha de la última recepción hasta hoy.</p>
+              </article>
+
+              <article class="coverage-item">
+                <span>Líneas de documento revisadas</span>
+                <strong>${number(scanStats.documents?.details_seen)}</strong>
+                <p>Renglones de productos revisados dentro de esos documentos.</p>
+              </article>
+
+              <article class="coverage-item">
+                <span>Ventas/devoluciones del SKU</span>
+                <strong>${number(scanStats.documents?.matches)}</strong>
+                <p>Movimientos de venta o devolución encontrados para este SKU.</p>
+              </article>
+            </div>
           </section>
         `;
       };
 
       const renderError = (error) => {
+        setPdfAvailable(false);
+
         result.innerHTML = `
           <section class="section-card error-card">
             <div class="section-header">
@@ -381,6 +773,8 @@
         }
 
         button.disabled = true;
+        lastCalculation = null;
+        setPdfAvailable(false);
         result.innerHTML = '';
         setStatus('Calculando sell-through live desde Bsale...');
 
@@ -420,7 +814,9 @@
       Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
     color: #172033;
-    background: #f4f6fb;
+    background:
+      radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 32rem),
+      #f4f6fb;
   }
 
   * {
@@ -432,85 +828,93 @@
   }
 
   .page {
-    width: min(1120px, calc(100% - 32px));
+    width: min(1220px, calc(100% - 56px));
     margin: 0 auto;
-    padding: 48px 0;
+    padding: 34px 0 48px;
   }
 
   .hero {
-    margin-bottom: 28px;
+    margin-bottom: 22px;
   }
 
   .eyebrow,
   .section-kicker {
     margin: 0 0 8px;
     color: #64748b;
-    font-size: 13px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
   }
 
   h1 {
     margin: 0;
-    font-size: clamp(32px, 6vw, 56px);
-    line-height: 1;
+    font-size: clamp(38px, 4vw, 58px);
+    line-height: 0.98;
+    letter-spacing: -0.045em;
   }
 
   h2 {
     margin: 0;
-    font-size: 24px;
+    font-size: 22px;
+    letter-spacing: -0.025em;
   }
 
   .subtitle {
     max-width: 760px;
-    margin: 16px 0 0;
+    margin: 12px 0 0;
     color: #64748b;
-    font-size: 18px;
-  }
-
-  .panel,
-  .section-card {
-    background: #ffffff;
-    border: 1px solid #e2e8f0;
-    border-radius: 24px;
-    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+    font-size: 16px;
+    line-height: 1.45;
   }
 
   .panel {
-    padding: 24px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid #dbe3ef;
+    border-radius: 28px;
+    padding: 18px;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
   }
 
   .search-form {
     display: grid;
-    grid-template-columns: 1.2fr 1fr 1fr auto;
-    gap: 16px;
+    grid-template-columns: minmax(320px, 1.2fr) minmax(220px, 0.8fr) minmax(220px, 0.75fr) 124px;
+    gap: 12px;
     align-items: end;
+    padding: 4px 4px 16px;
+    border-bottom: 1px solid #e2e8f0;
   }
 
   label {
     display: grid;
-    gap: 8px;
+    gap: 7px;
     color: #334155;
-    font-size: 14px;
-    font-weight: 800;
+    font-size: 12px;
+    font-weight: 900;
   }
 
   input,
   select,
   button {
     width: 100%;
+    min-height: 46px;
     border-radius: 14px;
     border: 1px solid #cbd5e1;
-    padding: 14px 16px;
+    padding: 11px 13px;
     font: inherit;
+    font-size: 14px;
+  }
+
+  input,
+  select {
+    background: #ffffff;
   }
 
   button {
     border: 0;
     background: #172033;
     color: white;
-    font-weight: 900;
+    font-weight: 950;
     cursor: pointer;
   }
 
@@ -520,19 +924,30 @@
   }
 
   .status {
-    margin-top: 18px;
+    margin: 14px 4px 0;
     color: #64748b;
     font-weight: 800;
   }
 
   .result {
     display: grid;
-    gap: 18px;
-    margin-top: 24px;
+    grid-template-columns: minmax(360px, 0.88fr) minmax(520px, 1.12fr);
+    gap: 16px;
+    margin-top: 16px;
+  }
+
+  .result > .section-card:first-child,
+  .result > .section-card:nth-child(4) {
+    grid-column: 1 / -1;
   }
 
   .section-card {
-    padding: 20px;
+    min-width: 0;
+    background: #ffffff;
+    border: 1px solid #dbe3ef;
+    border-radius: 22px;
+    padding: 18px;
+    box-shadow: 0 14px 38px rgba(15, 23, 42, 0.05);
   }
 
   .muted-card {
@@ -545,15 +960,16 @@
     justify-content: space-between;
     gap: 16px;
     align-items: flex-start;
-    margin-bottom: 16px;
+    margin-bottom: 14px;
   }
 
   .badge {
     display: inline-flex;
+    align-items: center;
     border-radius: 999px;
-    padding: 8px 12px;
-    font-size: 12px;
-    font-weight: 900;
+    padding: 7px 11px;
+    font-size: 11px;
+    font-weight: 950;
     white-space: nowrap;
   }
 
@@ -581,37 +997,114 @@
     border-color: #fecaca;
   }
 
+  .result-layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 14px;
+    align-items: stretch;
+  }
+
+  .sellthrough-panel {
+    display: grid;
+    grid-template-columns: 116px 1fr;
+    gap: 16px;
+    align-items: center;
+    border-radius: 20px;
+    padding: 18px;
+    background: linear-gradient(145deg, #172033, #25324a);
+    color: white;
+  }
+
+  .gauge {
+    --value: 0;
+    width: 116px;
+    aspect-ratio: 1;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    background:
+      conic-gradient(#ffffff calc(var(--value) * 1%), rgba(255, 255, 255, 0.18) 0);
+  }
+
+  .gauge-inner {
+    width: 82px;
+    aspect-ratio: 1;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    background: #172033;
+    text-align: center;
+  }
+
+  .gauge-inner strong {
+    font-size: 22px;
+    line-height: 1;
+    letter-spacing: -0.04em;
+  }
+
+  .gauge-inner span {
+    margin-top: 5px;
+    color: #cbd5e1;
+    font-size: 10px;
+    font-weight: 950;
+  }
+
+  .metric-label {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 950;
+    line-height: 1.1;
+  }
+
+  .metric-help {
+    margin: 8px 0 0;
+    color: #cbd5e1;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
   .summary-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .summary-grid.compact {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .card {
-    border: 1px solid #e2e8f0;
-    border-radius: 20px;
-    padding: 18px;
+    min-width: 0;
+    min-height: 112px;
+    border: 1px solid #dbe3ef;
+    border-radius: 18px;
+    padding: 15px;
     background: #f8fafc;
   }
 
   .card span {
     display: block;
     color: #64748b;
-    font-size: 13px;
-    font-weight: 800;
+    font-size: 12px;
+    font-weight: 900;
   }
 
   .card strong {
     display: block;
-    margin-top: 8px;
-    font-size: 26px;
+    margin-top: 10px;
+    font-size: 27px;
+    line-height: 1;
+    letter-spacing: -0.035em;
     overflow-wrap: anywhere;
   }
 
   .card small {
     display: block;
-    margin-top: 6px;
+    margin-top: 8px;
     color: #64748b;
+    font-size: 12px;
+    line-height: 1.35;
   }
 
   .primary {
@@ -626,73 +1119,168 @@
 
   dl {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
     margin: 0;
+  }
+
+  dl .wide {
+    grid-column: span 2;
   }
 
   dt {
     color: #64748b;
-    font-size: 13px;
-    font-weight: 800;
+    font-size: 12px;
+    font-weight: 900;
   }
 
   dd {
-    margin: 4px 0 0;
-    font-weight: 900;
+    margin: 5px 0 0;
+    font-weight: 950;
+    line-height: 1.25;
     overflow-wrap: anywhere;
   }
 
-  .timeline {
+  .timeline-line {
+    position: relative;
     display: grid;
-    gap: 12px;
+    gap: 0;
+    padding-left: 22px;
   }
 
-  .movement {
+  .timeline-line::before {
+    content: "";
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: #cbd5e1;
+  }
+
+  .timeline-item {
+    position: relative;
     display: grid;
-    gap: 10px;
-    border: 1px solid #e2e8f0;
+    grid-template-columns: 94px minmax(0, 1fr);
+    gap: 14px;
+    padding: 0 0 14px;
+  }
+
+  .timeline-item:last-child {
+    padding-bottom: 0;
+  }
+
+  .timeline-dot {
+    position: absolute;
+    left: -20px;
+    top: 6px;
+    width: 16px;
+    height: 16px;
+    border: 3px solid #ffffff;
+    border-radius: 999px;
+    background: #64748b;
+    box-shadow: 0 0 0 2px #cbd5e1;
+  }
+
+  .timeline-entry .timeline-dot {
+    background: #16a34a;
+  }
+
+  .timeline-sale .timeline-dot {
+    background: #2563eb;
+  }
+
+  .timeline-return .timeline-dot {
+    background: #f97316;
+  }
+
+  .timeline-date {
+    padding-top: 3px;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 950;
+  }
+
+  .timeline-content {
+    border: 1px solid #dbe3ef;
     border-radius: 16px;
-    padding: 14px;
+    padding: 12px 14px;
     background: #ffffff;
   }
 
-  .movement-entry {
-    border-color: #bbf7d0;
-  }
-
-  .movement-sale {
-    border-color: #bfdbfe;
-  }
-
-  .movement-return {
-    border-color: #fed7aa;
-  }
-
-  .movement-header {
+  .timeline-top {
     display: flex;
     justify-content: space-between;
-    gap: 16px;
+    gap: 14px;
   }
 
-  .movement-header span {
+  .timeline-top span {
     display: block;
     margin-top: 4px;
     color: #64748b;
+    font-size: 13px;
   }
 
-  .movement-numbers {
-    text-align: right;
+  .timeline-qty {
+    font-size: 24px;
+    line-height: 1;
+    letter-spacing: -0.03em;
   }
 
-  .movement p {
-    margin: 0;
+  .timeline-content p {
+    margin: 8px 0 0;
     color: #64748b;
+    font-size: 13px;
   }
 
-  .movement small {
-    color: #94a3b8;
-    font-weight: 800;
+  .timeline-entry .timeline-content {
+    border-color: #bbf7d0;
+    background: #fbfffc;
+  }
+
+  .timeline-sale .timeline-content {
+    border-color: #bfdbfe;
+    background: #fbfdff;
+  }
+
+  .timeline-return .timeline-content {
+    border-color: #fed7aa;
+    background: #fffdf9;
+  }
+
+  .coverage-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .coverage-item {
+    border: 1px solid #dbe3ef;
+    border-radius: 16px;
+    padding: 13px;
+    background: #ffffff;
+    min-width: 0;
+  }
+
+  .coverage-item span {
+    display: block;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 900;
+  }
+
+  .coverage-item strong {
+    display: block;
+    margin-top: 7px;
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+
+  .coverage-item p {
+    margin: 7px 0 0;
+    color: #64748b;
+    font-size: 12px;
+    line-height: 1.38;
   }
 
   .muted {
@@ -710,26 +1298,62 @@
     margin-top: 16px;
   }
 
-  @media (max-width: 980px) {
+  @media (max-width: 1180px) {
+    .page {
+      width: min(1040px, calc(100% - 40px));
+    }
+
     .search-form {
       grid-template-columns: 1fr 1fr;
+    }
+
+    .result,
+    .result-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .result > .section-card:first-child,
+    .result > .section-card:nth-child(4) {
+      grid-column: auto;
+    }
+
+    .summary-grid.compact {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 
   @media (max-width: 760px) {
+    .page {
+      width: min(100% - 28px, 720px);
+      padding: 28px 0;
+    }
+
     .search-form,
     .summary-grid,
-    dl {
+    .summary-grid.compact,
+    dl,
+    .coverage-grid {
       grid-template-columns: 1fr;
     }
 
+    dl .wide {
+      grid-column: auto;
+    }
+
     .section-header,
-    .movement-header {
+    .timeline-top {
       display: grid;
     }
 
-    .movement-numbers {
-      text-align: left;
+    .sellthrough-panel {
+      grid-template-columns: 1fr;
+      justify-items: center;
+      text-align: center;
+    }
+
+    .timeline-item {
+      grid-template-columns: 1fr;
+      gap: 8px;
     }
   }
 </style>
