@@ -1,0 +1,61 @@
+name: Run Live Traceability Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Job ID específico. Vacío = toma el primer queued"
+        required: false
+        default: ""
+      lookback_days:
+        description: "Días hacia atrás para buscar movimientos"
+        required: true
+        default: "365"
+      max_document_pages_per_day_type:
+        description: "0 = todas. Prueba inicial: 1"
+        required: true
+        default: "1"
+      max_reception_pages_per_office:
+        description: "0 = todas. Prueba inicial: 2"
+        required: true
+        default: "2"
+      max_consumption_pages_per_office:
+        description: "0 = todas. Prueba inicial: 2"
+        required: true
+        default: "2"
+
+permissions:
+  contents: read
+
+jobs:
+  run-live-traceability:
+    runs-on: ubuntu-latest
+
+    env:
+      BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      LIVE_TRACEABILITY_JOB_ID: ${{ inputs.job_id }}
+      LIVE_TRACEABILITY_LOOKBACK_DAYS: ${{ inputs.lookback_days }}
+      LIVE_MAX_DOCUMENT_PAGES_PER_DAY_TYPE: ${{ inputs.max_document_pages_per_day_type }}
+      LIVE_MAX_RECEPTION_PAGES_PER_OFFICE: ${{ inputs.max_reception_pages_per_office }}
+      LIVE_MAX_CONSUMPTION_PAGES_PER_OFFICE: ${{ inputs.max_consumption_pages_per_office }}
+      LIVE_MAX_RECEPTION_DETAILS: "500"
+      LIVE_MAX_CONSUMPTION_DETAILS: "500"
+      LIVE_DOCUMENT_TYPE_IDS: "10,39,40,41,44"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run live traceability job
+        run: python src/run_live_traceability_job.py
