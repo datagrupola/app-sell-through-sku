@@ -14,6 +14,7 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: lztornyogibsaswcviss
       BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
       - name: Checkout repo
@@ -26,7 +27,10 @@ jobs:
 
       - name: Set Edge Function secrets
         run: |
-          supabase secrets set BSALE_ACCESS_TOKEN="$BSALE_ACCESS_TOKEN" --project-ref "$SUPABASE_PROJECT_REF"
+          supabase secrets set \
+            BSALE_ACCESS_TOKEN="$BSALE_ACCESS_TOKEN" \
+            SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
+            --project-ref "$SUPABASE_PROJECT_REF"
 
       - name: Deploy lookup-sku-live
         run: |

@@ -1,19 +1,22 @@
+const SUPABASE_URL =
+  Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-type StockMatch = {
+type StockIndexRow = {
   office_id: number;
-  office_name: string | null;
-  variant_id: number | null;
-  stock_id: number | null;
-  sku: string | null;
-  barcode: string | null;
+  variant_id: number;
+  stock_id: number;
+  sku_norm: string | null;
+  barcode_norm: string | null;
   quantity: number;
   quantity_reserved: number;
   quantity_available: number;
+  synced_at: string | null;
 };
 
 function normalizeSku(value: unknown): string {
@@ -24,14 +27,74 @@ function normalizeBarcode(value: unknown): string {
   return String(value ?? '').trim().replace(/\s+/g, '');
 }
 
-function matchesQuery(query: string, sku: string | null, barcode: string | null): boolean {
-  const qSku = normalizeSku(query);
-  const qBarcode = normalizeBarcode(query);
-
-  return normalizeSku(sku) === qSku || normalizeBarcode(barcode) === qBarcode;
+function numeric(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
-async function bsaleGet(path: string, params: Record<string, string | number>) {
+async function supabaseGetStockIndex(
+  column: 'sku_norm' | 'barcode_norm',
+  value: string,
+  officeIds: number[],
+): Promise<StockIndexRow[]> {
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+  if (!serviceRoleKey) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY secret');
+  }
+
+  const url = new URL(`${SUPABASE_URL}/rest/v1/bsale_stock_current`);
+
+  url.searchParams.set(
+    'select',
+    'office_id,variant_id,stock_id,sku_norm,barcode_norm,quantity,quantity_reserved,quantity_available,synced_at',
+  );
+
+  url.searchParams.set(column, `eq.${value}`);
+
+  if (officeIds.length > 0) {
+    url.searchParams.set('office_id', `in.(${officeIds.join(',')})`);
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Supabase index error ${response.status}: ${body.slice(0, 500)}`);
+  }
+
+  return response.json();
+}
+
+async function findStockIndexMatches(query: string, officeIds: number[]) {
+  const skuQuery = normalizeSku(query);
+  const barcodeQuery = normalizeBarcode(query);
+
+  const bySku = await supabaseGetStockIndex('sku_norm', skuQuery, officeIds);
+  const byBarcode = await supabaseGetStockIndex('barcode_norm', barcodeQuery, officeIds);
+
+  const seen = new Set<string>();
+  const rows: StockIndexRow[] = [];
+
+  for (const row of [...bySku, ...byBarcode]) {
+    const key = `${row.office_id}:${row.variant_id}:${row.stock_id}`;
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+async function bsaleGet(path: string, params: Record<string, string | number> = {}) {
   const token = Deno.env.get('BSALE_ACCESS_TOKEN');
 
   if (!token) {
@@ -60,57 +123,46 @@ async function bsaleGet(path: string, params: Record<string, string | number>) {
   return response.json();
 }
 
-async function findStockMatches(query: string, officeIds: number[]): Promise<StockMatch[]> {
-  const matches: StockMatch[] = [];
-  const limit = 50;
+async function getLiveStock(row: StockIndexRow) {
+  try {
+    const liveStock = await bsaleGet(`stocks/${row.stock_id}.json`, {
+      expand: '[office,variant]',
+    });
 
-  for (const officeId of officeIds) {
-    let offset = 0;
+    const office = liveStock.office ?? {};
+    const variant = liveStock.variant ?? {};
 
-    while (true) {
-      const page = await bsaleGet('stocks.json', {
-        officeid: officeId,
-        expand: '[office,variant]',
-        limit,
-        offset,
-      });
-
-      const items = page.items ?? [];
-      const count = Number(page.count ?? 0);
-
-      for (const item of items) {
-        const variant = item.variant ?? {};
-        const office = item.office ?? {};
-
-        const sku = variant.code ?? null;
-        const barcode = variant.barCode ?? null;
-
-        if (!matchesQuery(query, sku, barcode)) {
-          continue;
-        }
-
-        matches.push({
-          office_id: Number(office.id ?? officeId),
-          office_name: office.name ?? null,
-          variant_id: variant.id ? Number(variant.id) : null,
-          stock_id: item.id ? Number(item.id) : null,
-          sku,
-          barcode,
-          quantity: Number(item.quantity ?? 0),
-          quantity_reserved: Number(item.quantityReserved ?? 0),
-          quantity_available: Number(item.quantityAvailable ?? 0),
-        });
-      }
-
-      offset += limit;
-
-      if (!items.length || offset >= count) {
-        break;
-      }
-    }
+    return {
+      source: 'BSALE_LIVE',
+      live_ok: true,
+      office_id: numeric(office.id ?? row.office_id),
+      office_name: office.name ?? null,
+      variant_id: numeric(variant.id ?? row.variant_id),
+      stock_id: numeric(liveStock.id ?? row.stock_id),
+      sku: variant.code ?? row.sku_norm,
+      barcode: variant.barCode ?? row.barcode_norm,
+      quantity: numeric(liveStock.quantity ?? row.quantity),
+      quantity_reserved: numeric(liveStock.quantityReserved ?? row.quantity_reserved),
+      quantity_available: numeric(liveStock.quantityAvailable ?? row.quantity_available),
+      index_synced_at: row.synced_at,
+    };
+  } catch (error) {
+    return {
+      source: 'SUPABASE_INDEX_FALLBACK',
+      live_ok: false,
+      live_error: error instanceof Error ? error.message : String(error),
+      office_id: row.office_id,
+      office_name: null,
+      variant_id: row.variant_id,
+      stock_id: row.stock_id,
+      sku: row.sku_norm,
+      barcode: row.barcode_norm,
+      quantity: numeric(row.quantity),
+      quantity_reserved: numeric(row.quantity_reserved),
+      quantity_available: numeric(row.quantity_available),
+      index_synced_at: row.synced_at,
+    };
   }
-
-  return matches;
 }
 
 Deno.serve(async (req) => {
@@ -130,7 +182,9 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
+
     const query = String(body.query ?? '').trim();
+
     const officeIds = Array.isArray(body.office_ids)
       ? body.office_ids.map(Number).filter(Boolean)
       : [2, 3, 4];
@@ -145,14 +199,16 @@ Deno.serve(async (req) => {
       );
     }
 
-    const stock_matches = await findStockMatches(query, officeIds);
+    const indexMatches = await findStockIndexMatches(query, officeIds);
+    const stockMatches = await Promise.all(indexMatches.map(getLiveStock));
 
     return new Response(
       JSON.stringify({
         query,
-        source: 'BSALE_LIVE',
-        stock_matches,
-        found: stock_matches.length > 0,
+        source: 'BSALE_LIVE_BY_SUPABASE_INDEX',
+        found: stockMatches.length > 0,
+        index_matches: indexMatches.length,
+        stock_matches: stockMatches,
       }),
       {
         status: 200,
