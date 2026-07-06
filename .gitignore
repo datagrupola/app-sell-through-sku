@@ -1,0 +1,17 @@
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Local env
+.env
+web/.env
+
+# Node / Astro
+node_modules/
+dist/
+.astro/
+
+# Editor
+.vscode/
+web/.vscode/

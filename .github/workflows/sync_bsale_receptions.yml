@@ -1,0 +1,57 @@
+name: Sync Bsale Receptions
+
+on:
+  workflow_dispatch:
+    inputs:
+      office_ids:
+        description: "Office IDs separados por coma"
+        required: true
+        default: "2,3,4"
+      start_date:
+        description: "Fecha inicial YYYY-MM-DD"
+        required: true
+        default: "2025-07-06"
+      end_date:
+        description: "Fecha final YYYY-MM-DD. Vacío = hoy UTC"
+        required: false
+        default: ""
+      max_reception_pages_per_office:
+        description: "0 = todas las páginas. Prueba inicial: 2"
+        required: true
+        default: "2"
+      max_reception_details:
+        description: "Máximo de detalles por recepción"
+        required: true
+        default: "500"
+
+permissions:
+  contents: read
+
+jobs:
+  sync-receptions:
+    runs-on: ubuntu-latest
+
+    env:
+      BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OFFICE_IDS: ${{ inputs.office_ids }}
+      START_DATE: ${{ inputs.start_date }}
+      END_DATE: ${{ inputs.end_date }}
+      MAX_RECEPTION_PAGES_PER_OFFICE: ${{ inputs.max_reception_pages_per_office }}
+      MAX_RECEPTION_DETAILS: ${{ inputs.max_reception_details }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Bsale receptions sync
+        run: python src/sync_receptions.py
