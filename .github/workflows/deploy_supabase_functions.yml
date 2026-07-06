@@ -1,0 +1,33 @@
+name: Deploy Supabase Edge Functions
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-functions:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: lztornyogibsaswcviss
+      BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Set Edge Function secrets
+        run: |
+          supabase secrets set BSALE_ACCESS_TOKEN="$BSALE_ACCESS_TOKEN" --project-ref "$SUPABASE_PROJECT_REF"
+
+      - name: Deploy lookup-sku-live
+        run: |
+          supabase functions deploy lookup-sku-live --project-ref "$SUPABASE_PROJECT_REF"
