@@ -34,17 +34,6 @@
             </select>
           </label>
 
-          <label>
-            Buscar recepción en
-            <select id="lookback-select">
-              <option value="10">Últimos 10 días</option>
-              <option value="30" selected>Últimos 30 días</option>
-              <option value="90">Últimos 90 días</option>
-              <option value="180">Últimos 180 días</option>
-              <option value="365">Últimos 365 días</option>
-            </select>
-          </label>
-
           <button id="search-button" type="submit">Calcular</button>
         </form>
 
@@ -66,7 +55,6 @@
       const form = document.querySelector('#search-form');
       const input = document.querySelector('#search-input');
       const officeSelect = document.querySelector('#office-select');
-      const lookbackSelect = document.querySelector('#lookback-select');
       const button = document.querySelector('#search-button');
       const pdfButton = document.querySelector('#pdf-button');
       const status = document.querySelector('#status');
@@ -553,8 +541,7 @@
             </div>
 
             <p class="muted block-note">
-              El SKU existe, pero no se encontró recepción dentro del rango consultado.
-              Amplía el rango de búsqueda y vuelve a calcular.
+              El SKU existe, pero no se encontró recepción dentro de los últimos 365 días.
             </p>
           </section>
         `;
@@ -819,7 +806,7 @@
 
         const searchValue = input.value.trim();
         const officeId = Number(officeSelect.value);
-        const lookbackDays = Number(lookbackSelect.value);
+        const lookbackDays = 365;
 
         if (!searchValue) {
           setStatus('Escribe un SKU o código de barras.');
@@ -939,7 +926,7 @@
 
   .search-form {
     display: grid;
-    grid-template-columns: minmax(320px, 1.2fr) minmax(220px, 0.8fr) minmax(220px, 0.75fr) 124px;
+    grid-template-columns: minmax(320px, 1.2fr) minmax(220px, 0.8fr) 124px;
     gap: 12px;
     align-items: end;
     padding: 4px 4px 16px;
