@@ -50,6 +50,7 @@ type ReceptionStats = {
   lookup_windows: number[];
   stopped_after_first_match: boolean;
   assumed_reception_order: string;
+  detail_errors: Array<{ reception_id: number; message: string }>;
 };
 
 function normalizeSku(value: unknown): string {
@@ -336,7 +337,13 @@ async function findLastReceptionInWindow(params: {
 }) {
   const limit = 50;
   let latest: ReceptionResult = null;
-  const stats = { pages: 0, receptions_seen: 0, details_seen: 0, matches: 0 };
+  const stats = {
+    pages: 0,
+    receptions_seen: 0,
+    details_seen: 0,
+    matches: 0,
+    detail_errors: [] as Array<{ reception_id: number; message: string }>,
+  };
 
   for (const officeId of params.officeIds) {
     let offset = 0;
@@ -369,7 +376,24 @@ async function findLastReceptionInWindow(params: {
         if (!dateInRange(admissionDate, params.startDate, params.endDate)) continue;
 
         const receptionId = numeric(reception.id);
-        const details = await listReceptionDetails(receptionId, params.maxDetails);
+        let details;
+
+        try {
+          details = await listReceptionDetails(receptionId, params.maxDetails);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+
+          if (message.includes('Bsale API error 403')) {
+            stats.detail_errors.push({
+              reception_id: receptionId,
+              message: message.slice(0, 220),
+            });
+            continue;
+          }
+
+          throw error;
+        }
+
         const matchingDetails: Array<{ detail: Record<string, unknown>; variantId: number }> = [];
 
         for (const rawDetail of details) {
@@ -424,6 +448,7 @@ async function findLastReceptionProgressive(params: {
     lookup_windows: [],
     stopped_after_first_match: false,
     assumed_reception_order: 'newest_first',
+    detail_errors: [],
   };
 
   for (const days of steps) {
@@ -440,6 +465,7 @@ async function findLastReceptionProgressive(params: {
     stats.receptions_seen += windowResult.stats.receptions_seen;
     stats.details_seen += windowResult.stats.details_seen;
     stats.matches += windowResult.stats.matches;
+    stats.detail_errors.push(...(windowResult.stats.detail_errors ?? []));
 
     if (windowResult.last_reception) {
       stats.stopped_after_first_match = true;
