@@ -148,13 +148,8 @@
           const qty = numeric(item.quantity);
           const amount = numeric(item.total_amount_signed ?? item.total_amount);
 
-          if (group === 'VENTA') {
-            current.sold += qty;
-          }
-
-          if (group === 'DEVOLUCION') {
-            current.returned += qty;
-          }
+          if (group === 'VENTA') current.sold += qty;
+          if (group === 'DEVOLUCION') current.returned += qty;
 
           current.net = current.sold - current.returned;
           current.amount += amount;
@@ -188,6 +183,17 @@
           const reception = data.last_reception || {};
           const scanStats = data.scan_stats || {};
           const salesTimeline = buildSalesTimeline(data.movements || []);
+          const salesTotals = salesTimeline.reduce(
+            (acc, row) => {
+              acc.sold += numeric(row.sold);
+              acc.returned += numeric(row.returned);
+              acc.net += numeric(row.net);
+              acc.documents += numeric(row.documents);
+              return acc;
+            },
+            { sold: 0, returned: 0, net: 0, documents: 0 },
+          );
+          const maxSold = Math.max(1, ...salesTimeline.map((row) => numeric(row.sold)));
 
           const pdf = new jsPDF({
             orientation: 'landscape',
@@ -196,13 +202,17 @@
           });
 
           const pageWidth = pdf.internal.pageSize.getWidth();
+          const pageHeight = pdf.internal.pageSize.getHeight();
           const margin = 34;
+          const contentWidth = pageWidth - margin * 2;
           const dark = '#172033';
           const muted = '#64748b';
           const border = '#dbe3ef';
           const soft = '#f8fafc';
           const blue = '#2563eb';
           const green = '#166534';
+          const red = '#991b1b';
+          const amber = '#92400e';
           let y = margin;
 
           const safe = (value) => {
@@ -223,130 +233,249 @@
             });
           };
 
-          const card = (x, yPos, w, h, label, value, note = '') => {
+          const addFooter = () => {
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(7);
+            pdf.setTextColor(muted);
+            pdf.text(
+              `Generado ${new Date().toLocaleString('es-MX')} · Bsale live · ${safe(data.start_date)} a ${safe(data.end_date)}`,
+              margin,
+              pageHeight - 18,
+            );
+          };
+
+          const addPage = () => {
+            addFooter();
+            pdf.addPage();
+            y = margin;
+          };
+
+          const drawKpi = (x, yPos, w, h, label, value, note = '') => {
             pdf.setDrawColor(border);
             pdf.setFillColor(soft);
-            pdf.roundedRect(x, yPos, w, h, 10, 10, 'FD');
+            pdf.roundedRect(x, yPos, w, h, 9, 9, 'FD');
 
             pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(8);
+            pdf.setFontSize(7.5);
             pdf.setTextColor(muted);
-            pdf.text(label, x + 12, yPos + 18);
+            pdf.text(label.toUpperCase(), x + 10, yPos + 16);
 
-            pdf.setFontSize(20);
+            pdf.setFontSize(18);
             pdf.setTextColor(dark);
-            pdf.text(safe(value), x + 12, yPos + 43);
+            pdf.text(safe(value), x + 10, yPos + 39);
 
             if (note) {
-              pdf.setFontSize(8);
+              pdf.setFontSize(7.5);
               pdf.setTextColor(muted);
-              pdf.text(safe(note), x + 12, yPos + 60, { maxWidth: w - 24 });
+              pdf.text(safe(note), x + 10, yPos + 55, { maxWidth: w - 20 });
             }
           };
 
-          pdf.setFont('helvetica', 'bold');
-          pdf.setTextColor(muted);
-          pdf.setFontSize(8);
-          pdf.text('CHINO REGALADO · BSALE LIVE', margin, y);
+          const drawHeader = () => {
+            pdf.setFont('helvetica', 'bold');
+            pdf.setTextColor(muted);
+            pdf.setFontSize(8);
+            pdf.text('CHINO REGALADO · BSALE LIVE', margin, y);
 
-          pdf.setFillColor('#dcfce7');
-          pdf.roundedRect(pageWidth - margin - 86, y - 11, 86, 18, 9, 9, 'F');
-          pdf.setTextColor(green);
-          pdf.text('Calculado live', pageWidth - margin - 77, y + 1);
-          y += 26;
+            pdf.setFillColor('#dcfce7');
+            pdf.roundedRect(pageWidth - margin - 92, y - 11, 92, 18, 9, 9, 'F');
+            pdf.setTextColor(green);
+            pdf.text('Calculado live', pageWidth - margin - 78, y + 1);
+            y += 26;
 
-          pdf.setTextColor(dark);
-          pdf.setFontSize(28);
-          pdf.text('Reporte sell-through por SKU', margin, y);
-          y += 24;
+            pdf.setTextColor(dark);
+            pdf.setFontSize(27);
+            pdf.text('Reporte sell-through por SKU', margin, y);
+            y += 23;
 
-          pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(10);
-          pdf.setTextColor(muted);
-          pdf.text(
-            `SKU: ${safe(stock.sku || data.query)}   ·   Sucursal: ${safe(stock.office_name)}   ·   Consulta: ${new Date().toLocaleString('es-MX')}`,
-            margin,
-            y,
-          );
-          y += 26;
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(9.5);
+            pdf.setTextColor(muted);
+            pdf.text(
+              `SKU: ${safe(stock.sku || data.query)}   ·   Sucursal: ${safe(stock.office_name)}   ·   Consulta: ${new Date().toLocaleString('es-MX')}`,
+              margin,
+              y,
+            );
+            y += 28;
+          };
 
-          const boxW = pageWidth - margin * 2;
-          const kpiW = (boxW - 48) / 4;
+          drawHeader();
 
+          const summaryY = y;
+          const summaryH = 154;
           pdf.setDrawColor(border);
           pdf.setFillColor('#ffffff');
-          pdf.roundedRect(margin, y, boxW, 118, 14, 14, 'FD');
+          pdf.roundedRect(margin, summaryY, contentWidth, summaryH, 14, 14, 'FD');
 
+          const panelX = margin + 14;
+          const panelY = summaryY + 14;
+          const panelW = 184;
+          const panelH = summaryH - 28;
           pdf.setFillColor(dark);
-          pdf.roundedRect(margin + 14, y + 14, 170, 90, 12, 12, 'F');
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(31);
-          pdf.setTextColor('#ffffff');
-          pdf.text(`${fmt(summary.sell_through_pct)}%`, margin + 30, y + 55);
-          pdf.setFontSize(9);
-          pdf.text('Sell-through', margin + 32, y + 74);
-          pdf.setFont('helvetica', 'normal');
-          pdf.setTextColor('#cbd5e1');
-          pdf.text('desde última recepción', margin + 32, y + 88);
+          pdf.roundedRect(panelX, panelY, panelW, panelH, 12, 12, 'F');
 
-          card(margin + 205, y + 32, kpiW - 30, 56, 'Recibidas', fmt(summary.piezas_recibidas_ultima_recepcion), `Recepción ${safe(reception.reception_id)}`);
-          card(margin + 205 + kpiW, y + 32, kpiW - 30, 56, 'Vendidas', fmt(summary.piezas_vendidas_desde_ultima_recepcion), `Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}`);
-          card(margin + 205 + kpiW * 2, y + 32, kpiW - 30, 56, 'Stock actual', fmt(summary.stock_actual), `Disponible: ${fmt(summary.stock_disponible)}`);
-          card(margin + 205 + kpiW * 3, y + 32, kpiW - 30, 56, 'Venta neta', fmt(summary.piezas_netas_venta_desde_ultima_recepcion), `Desde ${safe(reception.movement_date)}`);
-          y += 146;
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(29);
+          pdf.setTextColor('#ffffff');
+          pdf.text(`${fmt(summary.sell_through_pct)}%`, panelX + 18, panelY + 44);
+
+          pdf.setFontSize(8.5);
+          pdf.text('SELL-THROUGH', panelX + 18, panelY + 66);
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(8);
+          pdf.setTextColor('#cbd5e1');
+          pdf.text('desde última recepción', panelX + 18, panelY + 82);
+          pdf.text(
+            `${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} piezas netas de ${fmt(summary.piezas_recibidas_ultima_recepcion)} recibidas`,
+            panelX + 18,
+            panelY + 104,
+            { maxWidth: panelW - 36 },
+          );
+
+          const rightX = panelX + panelW + 18;
+          const rightW = contentWidth - panelW - 46;
+          const gap = 12;
+          const kpiW = (rightW - gap) / 2;
+          const kpiH = 58;
+          drawKpi(rightX, panelY, kpiW, kpiH, 'Recibidas', fmt(summary.piezas_recibidas_ultima_recepcion), `Recepción ${safe(reception.reception_id)}`);
+          drawKpi(rightX + kpiW + gap, panelY, kpiW, kpiH, 'Vendidas', fmt(summary.piezas_vendidas_desde_ultima_recepcion), `Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}`);
+          drawKpi(rightX, panelY + kpiH + gap, kpiW, kpiH, 'Stock actual', fmt(summary.stock_actual), `Disponible: ${fmt(summary.stock_disponible)}`);
+          drawKpi(rightX + kpiW + gap, panelY + kpiH + gap, kpiW, kpiH, 'Venta neta', fmt(summary.piezas_netas_venta_desde_ultima_recepcion), `Desde ${safe(reception.movement_date)}`);
+          y += summaryH + 24;
 
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(15);
           pdf.setTextColor(dark);
           pdf.text('Recepción y ventas en el tiempo', margin, y);
-          y += 20;
+          y += 18;
 
+          const receptionH = 84;
           pdf.setDrawColor(border);
           pdf.setFillColor('#ffffff');
-          pdf.roundedRect(margin, y, boxW, 86, 12, 12, 'FD');
-          pdf.setFontSize(8);
+          pdf.roundedRect(margin, y, contentWidth, receptionH, 12, 12, 'FD');
+          pdf.setFontSize(7.5);
           pdf.setTextColor(muted);
-          pdf.text('ÚLTIMA RECEPCIÓN', margin + 14, y + 18);
+          pdf.text('ÚLTIMA RECEPCIÓN', margin + 14, y + 17);
           pdf.setFontSize(13);
           pdf.setTextColor(dark);
-          pdf.text(`Recepción ${safe(reception.reception_id)} · ${safe(reception.movement_date)}`, margin + 14, y + 38);
+          pdf.text(`Recepción ${safe(reception.reception_id)} · ${safe(reception.movement_date)}`, margin + 14, y + 37);
           pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(9);
+          pdf.setFontSize(8.5);
           pdf.text(
             `Piezas: ${fmt(reception.quantity)} · Costo: ${fmtMoney(reception.cost)} · Stock al recibir: ${fmt(reception.variant_stock)} · Nota: ${safe(reception.note)}`,
             margin + 14,
             y + 58,
-            { maxWidth: boxW - 28 },
+            { maxWidth: contentWidth - 28 },
           );
-          y += 110;
+          y += receptionH + 24;
 
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(8);
           pdf.setTextColor(muted);
           pdf.text('VENTAS AGRUPADAS POR DÍA', margin, y);
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setTextColor(dark);
+          pdf.text(`${fmt(salesTotals.sold)} vendidas`, pageWidth - margin - 210, y);
+          pdf.text(`${fmt(salesTotals.returned)} devueltas`, pageWidth - margin - 135, y);
+          pdf.text(`${fmt(salesTotals.net)} netas`, pageWidth - margin - 52, y);
           y += 16;
 
-          const maxRows = Math.min(salesTimeline.length, 9);
-          for (let i = 0; i < maxRows; i++) {
-            const row = salesTimeline[i];
+          const drawSalesHeader = () => {
+            pdf.setFillColor('#eef2f7');
+            pdf.roundedRect(margin, y, contentWidth, 22, 8, 8, 'F');
             pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(7.5);
+            pdf.setTextColor(muted);
+            pdf.text('FECHA', margin + 10, y + 14);
+            pdf.text('VENDIDAS', margin + 100, y + 14);
+            pdf.text('DEVUELTAS', margin + 168, y + 14);
+            pdf.text('NETAS', margin + 252, y + 14);
+            pdf.text('DOCS', margin + 312, y + 14);
+            pdf.text('VOLUMEN DIARIO', margin + 370, y + 14);
+            y += 28;
+          };
+
+          const drawSalesRow = (row) => {
+            if (y > pageHeight - 58) {
+              addPage();
+              pdf.setFont('helvetica', 'bold');
+              pdf.setFontSize(13);
+              pdf.setTextColor(dark);
+              pdf.text('Ventas agrupadas por día · continuación', margin, y);
+              y += 18;
+              drawSalesHeader();
+            }
+
+            const rowH = 27;
+            pdf.setDrawColor('#e2e8f0');
+            pdf.line(margin, y + rowH, margin + contentWidth, y + rowH);
+
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(8.5);
             pdf.setTextColor(dark);
-            pdf.setFontSize(9);
-            pdf.text(safe(row.date), margin, y);
+            pdf.text(safe(row.date), margin + 10, y + 17);
+
             pdf.setFont('helvetica', 'normal');
             pdf.setTextColor(muted);
-            pdf.text(
-              `Vendidas ${fmt(row.sold)} · Devueltas ${fmt(row.returned)} · Neto ${fmt(row.net)} · Docs ${fmt(row.documents)}`,
-              margin + 88,
-              y,
-            );
-            y += 18;
+            pdf.text(fmt(row.sold), margin + 100, y + 17);
+            pdf.text(fmt(row.returned), margin + 168, y + 17);
+
+            const netColor = row.net < 0 ? red : row.returned > 0 ? amber : green;
+            pdf.setFont('helvetica', 'bold');
+            pdf.setTextColor(netColor);
+            pdf.text(fmt(row.net), margin + 252, y + 17);
+
+            pdf.setTextColor(muted);
+            pdf.text(fmt(row.documents), margin + 312, y + 17);
+
+            const barX = margin + 370;
+            const barW = contentWidth - 390;
+            const barY = y + 9;
+            const barFill = row.sold > 0 ? Math.max(4, (numeric(row.sold) / maxSold) * barW) : 0;
+            pdf.setFillColor('#e2e8f0');
+            pdf.roundedRect(barX, barY, barW, 9, 5, 5, 'F');
+            if (barFill > 0) {
+              pdf.setFillColor(blue);
+              pdf.roundedRect(barX, barY, barFill, 9, 5, 5, 'F');
+            }
+
+            y += rowH;
+          };
+
+          if (salesTimeline.length) {
+            drawSalesHeader();
+            for (const row of salesTimeline) drawSalesRow(row);
+          } else {
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(9);
+            pdf.setTextColor(muted);
+            pdf.text('No hay ventas ni devoluciones posteriores a la última recepción.', margin, y + 14);
+            y += 28;
           }
 
-          if (salesTimeline.length > maxRows) {
+          if (y < pageHeight - 90) {
+            y += 18;
+            pdf.setDrawColor(border);
+            pdf.setFillColor('#f8fafc');
+            pdf.roundedRect(margin, y, contentWidth, 54, 10, 10, 'FD');
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(7.5);
             pdf.setTextColor(muted);
-            pdf.text(`+ ${salesTimeline.length - maxRows} días adicionales con venta`, margin, y);
+            pdf.text('COBERTURA REVISADA', margin + 12, y + 17);
+            pdf.setFont('helvetica', 'normal');
+            pdf.setFontSize(7.5);
+            pdf.setTextColor(dark);
+            pdf.text(
+              `Recepciones: ${fmt(scanStats.receptions?.receptions_seen)} · Recepciones con SKU: ${fmt(scanStats.receptions?.matches)} · Documentos: ${fmt(scanStats.documents?.documents_seen)} · Líneas: ${fmt(scanStats.documents?.details_seen)} · Movimientos del SKU: ${fmt(scanStats.documents?.matches)}`,
+              margin + 12,
+              y + 36,
+              { maxWidth: contentWidth - 24 },
+            );
           }
+
+          addFooter();
 
           const sku = input.value.trim() || 'sku';
           const date = new Date().toISOString().slice(0, 10);
