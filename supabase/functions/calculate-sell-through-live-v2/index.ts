@@ -352,7 +352,7 @@ async function findLastReceptionInWindow(params: {
     while (!foundInOffice) {
       const page = await bsaleGet('stocks/receptions.json', {
         officeid: officeId,
-        expand: '[office,details]',
+        expand: '[office]',
         limit,
         offset,
       });
