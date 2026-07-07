@@ -325,13 +325,6 @@ async function findLastReception(params: {
   maxDetails: number;
 }) {
   const limit = 50;
-  let latest: null | {
-    movement: Movement;
-    date: string;
-    reception_id: number;
-    quantity: number;
-    cost: number;
-  } = null;
 
   const stats = {
     pages: 0,
@@ -343,8 +336,9 @@ async function findLastReception(params: {
   for (const officeId of params.officeIds) {
     let offset = 0;
     let pageNumber = 0;
+    let stopOfficeScan = false;
 
-    while (true) {
+    while (!stopOfficeScan) {
       if (params.maxPagesPerOffice > 0 && pageNumber >= params.maxPagesPerOffice) {
         break;
       }
@@ -367,12 +361,20 @@ async function findLastReception(params: {
 
         const admissionDate = unixToDate(reception.admissionDate);
 
+        // Bsale returns stock receptions newest-first in practice. Once the stream
+        // is older than the lookup window, continuing would only burn Edge runtime.
+        if (admissionDate && admissionDate < params.startDate) {
+          stopOfficeScan = true;
+          break;
+        }
+
         if (!dateInRange(admissionDate, params.startDate, params.endDate)) {
           continue;
         }
 
         const receptionId = numeric(reception.id);
         const details = await listReceptionDetails(receptionId, params.maxDetails);
+        const matchingDetails = [];
 
         for (const detail of details) {
           stats.details_seen += 1;
@@ -384,51 +386,52 @@ async function findLastReception(params: {
             continue;
           }
 
-          stats.matches += 1;
-
-          const quantity = numeric(detail.quantity);
-          const cost = numeric(detail.cost);
-          const movement = {
-            source: 'receptions',
-            movement_group: 'ENTRADA',
-            movement_type: classifyReception(reception),
-            office_id: officeId,
-            movement_date: admissionDate,
-            reception_id: receptionId,
-            reception_detail_id: intOrNull(detail.id),
-            variant_id: variantId,
-            quantity,
-            quantity_signed: quantity,
-            cost,
-            variant_stock: numeric(detail.variantStock),
-            note: reception.note || reception.document || null,
-          };
-
-          if (
-            !latest ||
-            String(admissionDate) > latest.date ||
-            (String(admissionDate) === latest.date && receptionId > latest.reception_id)
-          ) {
-            latest = {
-              movement,
-              date: String(admissionDate),
-              reception_id: receptionId,
-              quantity,
-              cost,
-            };
-          } else if (
-            latest &&
-            String(admissionDate) === latest.date &&
-            receptionId === latest.reception_id
-          ) {
-            latest.quantity += quantity;
-            latest.movement = {
-              ...latest.movement,
-              quantity: latest.quantity,
-              quantity_signed: latest.quantity,
-            };
-          }
+          matchingDetails.push({ detail, variantId });
         }
+
+        if (!matchingDetails.length) {
+          continue;
+        }
+
+        stats.matches += matchingDetails.length;
+
+        const firstMatch = matchingDetails[0];
+        const firstDetail = firstMatch.detail;
+        const quantity = matchingDetails.reduce(
+          (sum, item) => sum + numeric(item.detail.quantity),
+          0,
+        );
+        const variantStock = matchingDetails.reduce(
+          (sum, item) => sum + numeric(item.detail.variantStock),
+          0,
+        );
+
+        const movement = {
+          source: 'receptions',
+          movement_group: 'ENTRADA',
+          movement_type: classifyReception(reception),
+          office_id: officeId,
+          movement_date: admissionDate,
+          reception_id: receptionId,
+          reception_detail_id: intOrNull(firstDetail.id),
+          variant_id: firstMatch.variantId,
+          quantity,
+          quantity_signed: quantity,
+          cost: numeric(firstDetail.cost),
+          variant_stock: variantStock,
+          note: reception.note || reception.document || null,
+        };
+
+        return {
+          last_reception: {
+            movement,
+            date: String(admissionDate),
+            reception_id: receptionId,
+            quantity,
+            cost: numeric(firstDetail.cost),
+          },
+          stats,
+        };
       }
 
       offset += limit;
@@ -441,7 +444,7 @@ async function findLastReception(params: {
   }
 
   return {
-    last_reception: latest,
+    last_reception: null,
     stats,
   };
 }
