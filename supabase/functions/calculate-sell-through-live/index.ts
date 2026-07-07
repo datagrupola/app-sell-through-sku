@@ -9,6 +9,7 @@ const corsHeaders = {
 
 const SALE_DOCUMENT_TYPES = new Set([10, 40, 44]);
 const RETURN_DOCUMENT_TYPES = new Set([39, 41]);
+const LOOKBACK_STEPS = [10, 30, 90, 180, 365];
 
 type StockIndexRow = {
   office_id: number;
@@ -32,6 +33,21 @@ type AliasRow = {
 };
 
 type Movement = Record<string, unknown>;
+
+type ReceptionResult = null | {
+  movement: Movement;
+  date: string;
+  reception_id: number;
+  quantity: number;
+  cost: number;
+};
+
+type ReceptionStats = {
+  pages: number;
+  receptions_seen: number;
+  details_seen: number;
+  matches: number;
+};
 
 function normalizeSku(value: unknown): string {
   return String(value ?? '').trim().toUpperCase();
@@ -107,6 +123,21 @@ function classifyReception(reception: Record<string, unknown>): string {
   if (boolValue(reception.updateStock)) return 'ENTRADA_STOCK';
 
   return 'ENTRADA_IMPORTADA_AMBIGUA';
+}
+
+function mergeReceptionStats(target: ReceptionStats, source: ReceptionStats) {
+  target.pages += source.pages;
+  target.receptions_seen += source.receptions_seen;
+  target.details_seen += source.details_seen;
+  target.matches += source.matches;
+}
+
+function isBetterReception(candidate: ReceptionResult, current: ReceptionResult): boolean {
+  if (!candidate) return false;
+  if (!current) return true;
+  if (candidate.date > current.date) return true;
+  if (candidate.date < current.date) return false;
+  return candidate.reception_id > current.reception_id;
 }
 
 async function supabaseGet(table: string, params: Record<string, string>) {
@@ -316,17 +347,60 @@ async function listReceptionDetails(receptionId: number, maxDetails: number) {
   return items;
 }
 
-async function findLastReception(params: {
+function buildReceptionResult(params: {
+  reception: Record<string, unknown>;
+  officeId: number;
+  admissionDate: string;
+  receptionId: number;
+  matchingDetails: Array<{ detail: Record<string, unknown>; variantId: number }>;
+}): ReceptionResult {
+  const firstMatch = params.matchingDetails[0];
+  const firstDetail = firstMatch.detail;
+  const quantity = params.matchingDetails.reduce(
+    (sum, item) => sum + numeric(item.detail.quantity),
+    0,
+  );
+  const variantStock = params.matchingDetails.reduce(
+    (sum, item) => sum + numeric(item.detail.variantStock),
+    0,
+  );
+
+  const movement = {
+    source: 'receptions',
+    movement_group: 'ENTRADA',
+    movement_type: classifyReception(params.reception),
+    office_id: params.officeId,
+    movement_date: params.admissionDate,
+    reception_id: params.receptionId,
+    reception_detail_id: intOrNull(firstDetail.id),
+    variant_id: firstMatch.variantId,
+    quantity,
+    quantity_signed: quantity,
+    cost: numeric(firstDetail.cost),
+    variant_stock: variantStock,
+    note: params.reception.note || params.reception.document || null,
+  };
+
+  return {
+    movement,
+    date: params.admissionDate,
+    reception_id: params.receptionId,
+    quantity,
+    cost: numeric(firstDetail.cost),
+  };
+}
+
+async function findLastReceptionInWindow(params: {
   officeIds: number[];
   variantIds: Set<number>;
   startDate: string;
   endDate: string;
-  maxPagesPerOffice: number;
   maxDetails: number;
 }) {
   const limit = 50;
+  let latest: ReceptionResult = null;
 
-  const stats = {
+  const stats: ReceptionStats = {
     pages: 0,
     receptions_seen: 0,
     details_seen: 0,
@@ -335,14 +409,8 @@ async function findLastReception(params: {
 
   for (const officeId of params.officeIds) {
     let offset = 0;
-    let pageNumber = 0;
-    let stopOfficeScan = false;
 
-    while (!stopOfficeScan) {
-      if (params.maxPagesPerOffice > 0 && pageNumber >= params.maxPagesPerOffice) {
-        break;
-      }
-
+    while (true) {
       const page = await bsaleGet('stocks/receptions.json', {
         officeid: officeId,
         expand: '[office,details]',
@@ -356,16 +424,16 @@ async function findLastReception(params: {
 
       if (!receptions.length) break;
 
+      let sawOlderThanWindow = false;
+
       for (const reception of receptions) {
         stats.receptions_seen += 1;
 
         const admissionDate = unixToDate(reception.admissionDate);
 
-        // Bsale returns stock receptions newest-first in practice. Once the stream
-        // is older than the lookup window, continuing would only burn Edge runtime.
         if (admissionDate && admissionDate < params.startDate) {
-          stopOfficeScan = true;
-          break;
+          sawOlderThanWindow = true;
+          continue;
         }
 
         if (!dateInRange(admissionDate, params.startDate, params.endDate)) {
@@ -374,12 +442,13 @@ async function findLastReception(params: {
 
         const receptionId = numeric(reception.id);
         const details = await listReceptionDetails(receptionId, params.maxDetails);
-        const matchingDetails = [];
+        const matchingDetails: Array<{ detail: Record<string, unknown>; variantId: number }> = [];
 
-        for (const detail of details) {
+        for (const rawDetail of details) {
+          const detail = rawDetail as Record<string, unknown>;
           stats.details_seen += 1;
 
-          const variant = detail.variant ?? {};
+          const variant = (detail.variant ?? {}) as Record<string, unknown>;
           const variantId = intOrNull(variant.id);
 
           if (variantId === null || !params.variantIds.has(variantId)) {
@@ -395,57 +464,85 @@ async function findLastReception(params: {
 
         stats.matches += matchingDetails.length;
 
-        const firstMatch = matchingDetails[0];
-        const firstDetail = firstMatch.detail;
-        const quantity = matchingDetails.reduce(
-          (sum, item) => sum + numeric(item.detail.quantity),
-          0,
-        );
-        const variantStock = matchingDetails.reduce(
-          (sum, item) => sum + numeric(item.detail.variantStock),
-          0,
-        );
+        const candidate = buildReceptionResult({
+          reception,
+          officeId,
+          admissionDate: String(admissionDate),
+          receptionId,
+          matchingDetails,
+        });
 
-        const movement = {
-          source: 'receptions',
-          movement_group: 'ENTRADA',
-          movement_type: classifyReception(reception),
-          office_id: officeId,
-          movement_date: admissionDate,
-          reception_id: receptionId,
-          reception_detail_id: intOrNull(firstDetail.id),
-          variant_id: firstMatch.variantId,
-          quantity,
-          quantity_signed: quantity,
-          cost: numeric(firstDetail.cost),
-          variant_stock: variantStock,
-          note: reception.note || reception.document || null,
-        };
-
-        return {
-          last_reception: {
-            movement,
-            date: String(admissionDate),
-            reception_id: receptionId,
-            quantity,
-            cost: numeric(firstDetail.cost),
-          },
-          stats,
-        };
+        if (isBetterReception(candidate, latest)) {
+          latest = candidate;
+        } else if (latest && candidate && latest.reception_id === candidate.reception_id) {
+          latest.quantity += candidate.quantity;
+          latest.movement = {
+            ...latest.movement,
+            quantity: latest.quantity,
+            quantity_signed: latest.quantity,
+          };
+        }
       }
 
       offset += limit;
-      pageNumber += 1;
 
-      if (offset >= count) {
+      if (offset >= count || sawOlderThanWindow) {
         break;
       }
     }
   }
 
   return {
+    last_reception: latest,
+    stats,
+  };
+}
+
+async function findLastReception(params: {
+  officeIds: number[];
+  variantIds: Set<number>;
+  lookbackDays: number;
+  endDate: string;
+  maxDetails: number;
+}) {
+  const requestedLookback = Math.max(1, Math.trunc(params.lookbackDays || 30));
+  const steps = Array.from(
+    new Set([...LOOKBACK_STEPS.filter((days) => days < requestedLookback), requestedLookback]),
+  ).sort((a, b) => a - b);
+
+  const stats: ReceptionStats & { lookup_windows: number[] } = {
+    pages: 0,
+    receptions_seen: 0,
+    details_seen: 0,
+    matches: 0,
+    lookup_windows: [],
+  };
+
+  for (const days of steps) {
+    const windowResult = await findLastReceptionInWindow({
+      officeIds: params.officeIds,
+      variantIds: params.variantIds,
+      startDate: dateDaysAgo(days),
+      endDate: params.endDate,
+      maxDetails: params.maxDetails,
+    });
+
+    stats.lookup_windows.push(days);
+    mergeReceptionStats(stats, windowResult.stats);
+
+    if (windowResult.last_reception) {
+      return {
+        last_reception: windowResult.last_reception,
+        stats,
+        start_date_used: dateDaysAgo(days),
+      };
+    }
+  }
+
+  return {
     last_reception: null,
     stats,
+    start_date_used: dateDaysAgo(requestedLookback),
   };
 }
 
@@ -563,13 +660,7 @@ async function scanDocumentsSince(params: {
 
 function buildSummary(params: {
   stockMatches: Record<string, unknown>[];
-  lastReception: null | {
-    movement: Movement;
-    date: string;
-    reception_id: number;
-    quantity: number;
-    cost: number;
-  };
+  lastReception: ReceptionResult;
   documentMovements: Movement[];
 }) {
   const received = numeric(params.lastReception?.quantity);
@@ -608,13 +699,10 @@ Deno.serve(async (req) => {
 
   try {
     if (req.method !== 'POST') {
-      return new Response(
-        JSON.stringify({ error: 'Method not allowed' }),
-        {
-          status: 405,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        },
-      );
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     const body = await req.json();
@@ -625,22 +713,21 @@ Deno.serve(async (req) => {
       : [2, 3, 4];
 
     const lookbackDays = numeric(body.lookback_days ?? 30);
-    const maxReceptionPagesPerOffice = numeric(body.max_reception_pages_per_office ?? 0);
-    const maxDocumentPagesPerDayType = numeric(body.max_document_pages_per_day_type ?? 0);
     const maxReceptionDetails = numeric(body.max_reception_details ?? 1000);
 
+    // Keep document scan complete by default. Older frontend versions may send a
+    // temporary cap; ignore it for audit correctness.
+    const maxDocumentPagesPerDayType = 0;
+
     if (!query) {
-      return new Response(
-        JSON.stringify({ error: 'Missing query' }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        },
-      );
+      return new Response(JSON.stringify({ error: 'Missing query' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     const endDate = todayUtc();
-    const startDate = dateDaysAgo(lookbackDays);
+    const requestedStartDate = dateDaysAgo(lookbackDays);
 
     const stockIndexRows = await findStockIndex(query, officeIds);
     const aliasRows = await findAliasIndex(query);
@@ -678,9 +765,8 @@ Deno.serve(async (req) => {
     const receptionResult = await findLastReception({
       officeIds,
       variantIds,
-      startDate,
+      lookbackDays,
       endDate,
-      maxPagesPerOffice: maxReceptionPagesPerOffice,
       maxDetails: maxReceptionDetails,
     });
 
@@ -698,7 +784,7 @@ Deno.serve(async (req) => {
           query,
           office_ids: officeIds,
           variant_ids: Array.from(variantIds).sort(),
-          start_date: startDate,
+          start_date: requestedStartDate,
           end_date: endDate,
           stock_matches: stockMatches,
           last_reception: null,
@@ -743,7 +829,7 @@ Deno.serve(async (req) => {
         query,
         office_ids: officeIds,
         variant_ids: Array.from(variantIds).sort(),
-        start_date: startDate,
+        start_date: receptionResult.start_date_used,
         end_date: endDate,
         stock_matches: stockMatches,
         last_reception: receptionResult.last_reception.movement,
