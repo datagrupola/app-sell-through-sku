@@ -143,15 +143,10 @@ function isBetterReception(candidate: ReceptionResult, current: ReceptionResult)
 async function supabaseGet(table: string, params: Record<string, string>) {
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-  if (!serviceRoleKey) {
-    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY secret');
-  }
+  if (!serviceRoleKey) throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY secret');
 
   const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
-
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, value);
-  }
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
 
   const response = await fetch(url, {
     method: 'GET',
@@ -173,15 +168,10 @@ async function supabaseGet(table: string, params: Record<string, string>) {
 async function bsaleGet(path: string, params: Record<string, string | number> = {}) {
   const token = Deno.env.get('BSALE_ACCESS_TOKEN');
 
-  if (!token) {
-    throw new Error('Missing BSALE_ACCESS_TOKEN secret');
-  }
+  if (!token) throw new Error('Missing BSALE_ACCESS_TOKEN secret');
 
   const url = new URL(`https://api.bsale.com.mx/v1/${path}`);
-
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, String(value));
-  }
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
 
   const response = await fetch(url, {
     method: 'GET',
@@ -203,7 +193,6 @@ async function findStockIndex(query: string, officeIds: number[]): Promise<Stock
   const skuQuery = normalizeSku(query);
   const barcodeQuery = normalizeBarcode(query);
   const officeFilter = `in.(${officeIds.join(',')})`;
-
   const rows: StockIndexRow[] = [];
 
   for (const [column, value] of [
@@ -228,7 +217,6 @@ async function findStockIndex(query: string, officeIds: number[]): Promise<Stock
   for (const row of rows) {
     const key = `${row.office_id}:${row.variant_id}:${row.stock_id}`;
     if (seen.has(key)) continue;
-
     seen.add(key);
     deduped.push(row);
   }
@@ -239,7 +227,6 @@ async function findStockIndex(query: string, officeIds: number[]): Promise<Stock
 async function findAliasIndex(query: string): Promise<AliasRow[]> {
   const skuQuery = normalizeSku(query);
   const barcodeQuery = normalizeBarcode(query);
-
   const rows: AliasRow[] = [];
 
   for (const [column, value] of [
@@ -262,7 +249,6 @@ async function findAliasIndex(query: string): Promise<AliasRow[]> {
   for (const row of rows) {
     const key = `${row.variant_id}:${row.sku_norm}:${row.barcode_norm}`;
     if (seen.has(key)) continue;
-
     seen.add(key);
     deduped.push(row);
   }
@@ -275,10 +261,7 @@ async function getLiveStockMatches(stockRows: StockIndexRow[]) {
 
   for (const row of stockRows) {
     try {
-      const live = await bsaleGet(`stocks/${row.stock_id}.json`, {
-        expand: '[office,variant]',
-      });
-
+      const live = await bsaleGet(`stocks/${row.stock_id}.json`, { expand: '[office,variant]' });
       const office = live.office ?? {};
       const variant = live.variant ?? {};
 
@@ -335,13 +318,8 @@ async function listReceptionDetails(receptionId: number, maxDetails: number) {
     const count = numeric(page.count);
     offset += limit;
 
-    if (maxDetails > 0 && items.length >= maxDetails) {
-      return items.slice(0, maxDetails);
-    }
-
-    if (!pageItems.length || offset >= count) {
-      break;
-    }
+    if (maxDetails > 0 && items.length >= maxDetails) return items.slice(0, maxDetails);
+    if (!pageItems.length || offset >= count) break;
   }
 
   return items;
@@ -356,10 +334,7 @@ function buildReceptionResult(params: {
 }): ReceptionResult {
   const firstMatch = params.matchingDetails[0];
   const firstDetail = firstMatch.detail;
-  const quantity = params.matchingDetails.reduce(
-    (sum, item) => sum + numeric(item.detail.quantity),
-    0,
-  );
+  const quantity = params.matchingDetails.reduce((sum, item) => sum + numeric(item.detail.quantity), 0);
   const variantStock = params.matchingDetails.reduce(
     (sum, item) => sum + numeric(item.detail.variantStock),
     0,
@@ -396,6 +371,7 @@ async function findLastReceptionInWindow(params: {
   startDate: string;
   endDate: string;
   maxDetails: number;
+  maxPagesPerOffice: number;
 }) {
   const limit = 50;
   let latest: ReceptionResult = null;
@@ -409,8 +385,11 @@ async function findLastReceptionInWindow(params: {
 
   for (const officeId of params.officeIds) {
     let offset = 0;
+    let pageNumber = 0;
 
     while (true) {
+      if (params.maxPagesPerOffice > 0 && pageNumber >= params.maxPagesPerOffice) break;
+
       const page = await bsaleGet('stocks/receptions.json', {
         officeid: officeId,
         expand: '[office,details]',
@@ -428,7 +407,6 @@ async function findLastReceptionInWindow(params: {
 
       for (const reception of receptions) {
         stats.receptions_seen += 1;
-
         const admissionDate = unixToDate(reception.admissionDate);
 
         if (admissionDate && admissionDate < params.startDate) {
@@ -436,9 +414,7 @@ async function findLastReceptionInWindow(params: {
           continue;
         }
 
-        if (!dateInRange(admissionDate, params.startDate, params.endDate)) {
-          continue;
-        }
+        if (!dateInRange(admissionDate, params.startDate, params.endDate)) continue;
 
         const receptionId = numeric(reception.id);
         const details = await listReceptionDetails(receptionId, params.maxDetails);
@@ -450,20 +426,13 @@ async function findLastReceptionInWindow(params: {
 
           const variant = (detail.variant ?? {}) as Record<string, unknown>;
           const variantId = intOrNull(variant.id);
-
-          if (variantId === null || !params.variantIds.has(variantId)) {
-            continue;
-          }
-
+          if (variantId === null || !params.variantIds.has(variantId)) continue;
           matchingDetails.push({ detail, variantId });
         }
 
-        if (!matchingDetails.length) {
-          continue;
-        }
+        if (!matchingDetails.length) continue;
 
         stats.matches += matchingDetails.length;
-
         const candidate = buildReceptionResult({
           reception,
           officeId,
@@ -485,17 +454,13 @@ async function findLastReceptionInWindow(params: {
       }
 
       offset += limit;
+      pageNumber += 1;
 
-      if (offset >= count || sawOlderThanWindow) {
-        break;
-      }
+      if (offset >= count || sawOlderThanWindow) break;
     }
   }
 
-  return {
-    last_reception: latest,
-    stats,
-  };
+  return { last_reception: latest, stats };
 }
 
 async function findLastReception(params: {
@@ -504,6 +469,7 @@ async function findLastReception(params: {
   lookbackDays: number;
   endDate: string;
   maxDetails: number;
+  maxPagesPerOffice: number;
 }) {
   const requestedLookback = Math.max(1, Math.trunc(params.lookbackDays || 30));
   const steps = Array.from(
@@ -525,6 +491,7 @@ async function findLastReception(params: {
       startDate: dateDaysAgo(days),
       endDate: params.endDate,
       maxDetails: params.maxDetails,
+      maxPagesPerOffice: params.maxPagesPerOffice,
     });
 
     stats.lookup_windows.push(days);
@@ -556,13 +523,7 @@ async function scanDocumentsSince(params: {
   const documentTypeIds = [10, 39, 40, 41, 44];
   const limit = 50;
   const movements: Movement[] = [];
-
-  const stats = {
-    pages: 0,
-    documents_seen: 0,
-    details_seen: 0,
-    matches: 0,
-  };
+  const stats = { pages: 0, documents_seen: 0, details_seen: 0, matches: 0 };
 
   for (const officeId of params.officeIds) {
     let day = params.startDate;
@@ -576,9 +537,7 @@ async function scanDocumentsSince(params: {
         let pageNumber = 0;
 
         while (true) {
-          if (params.maxPagesPerDayType > 0 && pageNumber >= params.maxPagesPerDayType) {
-            break;
-          }
+          if (params.maxPagesPerDayType > 0 && pageNumber >= params.maxPagesPerDayType) break;
 
           const page = await bsaleGet('documents.json', {
             officeid: officeId,
@@ -594,24 +553,17 @@ async function scanDocumentsSince(params: {
           const count = numeric(page.count);
           stats.pages += 1;
 
-          if (!documents.length) {
-            break;
-          }
+          if (!documents.length) break;
 
           for (const doc of documents) {
             stats.documents_seen += 1;
-
             const details = doc.details?.items ?? [];
 
             for (const detail of details) {
               stats.details_seen += 1;
-
               const variant = detail.variant ?? {};
               const variantId = intOrNull(variant.id);
-
-              if (variantId === null || !params.variantIds.has(variantId)) {
-                continue;
-              }
+              if (variantId === null || !params.variantIds.has(variantId)) continue;
 
               const quantity = numeric(detail.quantity);
               const amount = numeric(detail.totalAmount);
@@ -641,10 +593,7 @@ async function scanDocumentsSince(params: {
 
           offset += limit;
           pageNumber += 1;
-
-          if (offset >= count) {
-            break;
-          }
+          if (offset >= count) break;
         }
       }
 
@@ -652,10 +601,7 @@ async function scanDocumentsSince(params: {
     }
   }
 
-  return {
-    movements,
-    stats,
-  };
+  return { movements, stats };
 }
 
 function buildSummary(params: {
@@ -667,17 +613,11 @@ function buildSummary(params: {
   const sold = params.documentMovements
     .filter((item) => item.movement_group === 'VENTA')
     .reduce((sum, item) => sum + numeric(item.quantity), 0);
-
   const returned = params.documentMovements
     .filter((item) => item.movement_group === 'DEVOLUCION')
     .reduce((sum, item) => sum + numeric(item.quantity), 0);
-
   const stockActual = params.stockMatches.reduce((sum, item) => sum + numeric(item.quantity), 0);
-  const stockDisponible = params.stockMatches.reduce(
-    (sum, item) => sum + numeric(item.quantity_available),
-    0,
-  );
-
+  const stockDisponible = params.stockMatches.reduce((sum, item) => sum + numeric(item.quantity_available), 0);
   const netSold = sold - returned;
   const sellThroughPct = received > 0 ? Math.round((netSold / received) * 10000) / 100 : null;
 
@@ -693,9 +633,7 @@ function buildSummary(params: {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
     if (req.method !== 'POST') {
@@ -706,17 +644,20 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-
     const query = String(body.query ?? '').trim();
     const officeIds = Array.isArray(body.office_ids)
       ? body.office_ids.map(Number).filter(Boolean)
       : [2, 3, 4];
 
     const lookbackDays = numeric(body.lookback_days ?? 30);
-    const maxReceptionDetails = numeric(body.max_reception_details ?? 1000);
 
-    // Keep document scan complete by default. Older frontend versions may send a
-    // temporary cap; ignore it for audit correctness.
+    // Frontend versions deployed during testing sent 200, which can miss SKUs in large receptions.
+    // Keep the historical safe floor that worked before the regression.
+    const maxReceptionDetails = Math.max(1000, numeric(body.max_reception_details ?? 1000));
+    const maxReceptionPagesPerOffice = Math.max(6, numeric(body.max_reception_pages_per_office ?? 6));
+
+    // Keep document scan complete by default. Older frontend versions may send a temporary cap;
+    // ignore it for audit correctness once the correct last reception has been found.
     const maxDocumentPagesPerDayType = 0;
 
     if (!query) {
@@ -728,19 +669,12 @@ Deno.serve(async (req) => {
 
     const endDate = todayUtc();
     const requestedStartDate = dateDaysAgo(lookbackDays);
-
     const stockIndexRows = await findStockIndex(query, officeIds);
     const aliasRows = await findAliasIndex(query);
-
     const variantIds = new Set<number>();
 
-    for (const row of stockIndexRows) {
-      if (row.variant_id) variantIds.add(Number(row.variant_id));
-    }
-
-    for (const row of aliasRows) {
-      if (row.variant_id) variantIds.add(Number(row.variant_id));
-    }
+    for (const row of stockIndexRows) if (row.variant_id) variantIds.add(Number(row.variant_id));
+    for (const row of aliasRows) if (row.variant_id) variantIds.add(Number(row.variant_id));
 
     const stockMatches = await getLiveStockMatches(stockIndexRows);
 
@@ -755,10 +689,7 @@ Deno.serve(async (req) => {
           alias_matches: aliasRows.length,
           index_matches: stockIndexRows.length,
         }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        },
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
@@ -768,14 +699,11 @@ Deno.serve(async (req) => {
       lookbackDays,
       endDate,
       maxDetails: maxReceptionDetails,
+      maxPagesPerOffice: maxReceptionPagesPerOffice,
     });
 
     if (!receptionResult.last_reception) {
-      const summary = buildSummary({
-        stockMatches,
-        lastReception: null,
-        documentMovements: [],
-      });
+      const summary = buildSummary({ stockMatches, lastReception: null, documentMovements: [] });
 
       return new Response(
         JSON.stringify({
@@ -790,16 +718,10 @@ Deno.serve(async (req) => {
           last_reception: null,
           summary,
           movements: [],
-          scan_stats: {
-            receptions: receptionResult.stats,
-            documents: null,
-          },
+          scan_stats: { receptions: receptionResult.stats, documents: null },
           message: 'SKU encontrado, pero no se encontró recepción dentro del rango consultado.',
         }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        },
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
@@ -811,11 +733,9 @@ Deno.serve(async (req) => {
       maxPagesPerDayType: maxDocumentPagesPerDayType,
     });
 
-    const movements = [
-      receptionResult.last_reception.movement,
-      ...documentResult.movements,
-    ].sort((a, b) => String(b.movement_date).localeCompare(String(a.movement_date)));
-
+    const movements = [receptionResult.last_reception.movement, ...documentResult.movements].sort((a, b) =>
+      String(b.movement_date).localeCompare(String(a.movement_date)),
+    );
     const summary = buildSummary({
       stockMatches,
       lastReception: receptionResult.last_reception,
@@ -835,25 +755,14 @@ Deno.serve(async (req) => {
         last_reception: receptionResult.last_reception.movement,
         summary,
         movements,
-        scan_stats: {
-          receptions: receptionResult.stats,
-          documents: documentResult.stats,
-        },
+        scan_stats: { receptions: receptionResult.stats, documents: documentResult.stats },
       }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      },
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (error) {
     return new Response(
-      JSON.stringify({
-        error: error instanceof Error ? error.message : String(error),
-      }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      },
+      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
 });
