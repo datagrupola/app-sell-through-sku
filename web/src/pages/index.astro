@@ -764,7 +764,7 @@
               <article class="coverage-item">
                 <span>Documentos de venta revisados</span>
                 <strong>${number(scanStats.documents?.documents_seen)}</strong>
-                <p>Documentos revisados desde la fecha de la última recepción hasta hoy.</p>
+                <p>Documentos revisados desde la fecha de la última recepción hasta hoy. Límite operativo: primeras 2 páginas por día/tipo para evitar timeout de Edge Function.</p>
               </article>
 
               <article class="coverage-item">
@@ -825,9 +825,9 @@
             query: searchValue,
             office_ids: [officeId],
             lookback_days: lookbackDays,
-            max_reception_pages_per_office: 0,
-            max_document_pages_per_day_type: 0,
-            max_reception_details: 1000,
+            max_reception_pages_per_office: 6,
+            max_document_pages_per_day_type: 2,
+            max_reception_details: 200,
           },
         });
 
