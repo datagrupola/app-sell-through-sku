@@ -1,6 +1,8 @@
 const SUPABASE_URL =
   Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
 
+const FUNCTION_VERSION = 'v2.2-db-document-index';
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -12,7 +14,7 @@ const RETURN_DOCUMENT_TYPES = new Set([39, 41]);
 const DEFAULT_DOCUMENT_TYPES = [10, 39, 40, 41, 44];
 const RECEPTION_PAGE_LIMIT = 50;
 const DETAIL_PAGE_LIMIT = 100;
-const DOCUMENT_PAGE_LIMIT = 50;
+const DOCUMENT_INDEX_PAGE_LIMIT = 1000;
 const CONSUMPTION_PAGE_LIMIT = 50;
 
 type StockIndexRow = {
@@ -65,6 +67,7 @@ type DocumentStats = {
   details_seen: number;
   detail_requests: number;
   matches: number;
+  source: string;
   detail_errors: Array<{ document_id: number | null; message: string }>;
 };
 
@@ -118,12 +121,6 @@ function dateDaysAgo(days: number): string {
   return current.toISOString().slice(0, 10);
 }
 
-function addDays(dateText: string, days: number): string {
-  const current = new Date(`${dateText}T00:00:00Z`);
-  current.setUTCDate(current.getUTCDate() + days);
-  return current.toISOString().slice(0, 10);
-}
-
 function dateToUnixUtc(dateText: string, endOfDay = false): number {
   const suffix = endOfDay ? 'T23:59:59Z' : 'T00:00:00Z';
   return Math.floor(new Date(`${dateText}${suffix}`).getTime() / 1000);
@@ -164,6 +161,10 @@ function sortedVariantIds(variantIds: Set<number>): number[] {
   return Array.from(variantIds).sort((a, b) => a - b);
 }
 
+function inFilter(values: Array<number | string>): string {
+  return `in.(${values.join(',')})`;
+}
+
 async function supabaseGet(table: string, params: Record<string, string>) {
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   if (!serviceRoleKey) throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY secret');
@@ -182,7 +183,7 @@ async function supabaseGet(table: string, params: Record<string, string>) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Supabase index error ${response.status}: ${body.slice(0, 500)}`);
+    throw new Error(`Supabase index error ${response.status}: ${body.slice(0, 500)} | table=${table}`);
   }
 
   return response.json();
@@ -211,7 +212,7 @@ async function bsaleGet(path: string, params: Record<string, string | number> = 
 async function findStockIndex(query: string, officeIds: number[]): Promise<StockIndexRow[]> {
   const skuQuery = normalizeSku(query);
   const barcodeQuery = normalizeBarcode(query);
-  const officeFilter = `in.(${officeIds.join(',')})`;
+  const officeFilter = inFilter(officeIds);
   const rows: StockIndexRow[] = [];
 
   for (const [column, value] of [
@@ -315,14 +316,10 @@ async function listPagedDetails(path: string, maxDetails: number) {
     requests += 1;
     const pageItems = (page.items ?? []) as Record<string, unknown>[];
     items.push(...pageItems);
-
     const count = numeric(page.count);
     offset += DETAIL_PAGE_LIMIT;
 
-    if (maxDetails > 0 && items.length >= maxDetails) {
-      return { items: items.slice(0, maxDetails), requests };
-    }
-
+    if (maxDetails > 0 && items.length >= maxDetails) return { items: items.slice(0, maxDetails), requests };
     if (!pageItems.length || offset >= count) break;
   }
 
@@ -334,26 +331,8 @@ async function listReceptionDetails(receptionId: number, maxDetails: number) {
   return result.items;
 }
 
-async function listDocumentDetails(documentId: number, maxDetails: number) {
-  return listPagedDetails(`documents/${documentId}/details.json`, maxDetails);
-}
-
 async function listConsumptionDetails(consumptionId: number, maxDetails: number) {
   return listPagedDetails(`stocks/consumptions/${consumptionId}/details.json`, maxDetails);
-}
-
-async function getDocumentDetails(doc: Record<string, unknown>, maxDetails: number) {
-  const details = (doc.details ?? {}) as Record<string, unknown>;
-  const expandedItems = Array.isArray(details.items) ? (details.items as Record<string, unknown>[]) : [];
-  const expandedCount = intOrNull(details.count) ?? expandedItems.length;
-
-  if (expandedItems.length >= expandedCount) {
-    return { items: expandedItems, requests: 0 };
-  }
-
-  const documentId = intOrNull(doc.id);
-  if (documentId === null) return { items: expandedItems, requests: 0 };
-  return listDocumentDetails(documentId, maxDetails);
 }
 
 function buildReception(params: {
@@ -443,13 +422,11 @@ async function findLastReceptionInWindow(params: {
       const receptions = ((page.items ?? []) as Record<string, unknown>[]).slice().reverse();
       stats.pages += 1;
       pagesInOffice += 1;
-
       if (!receptions.length) break;
 
       for (const reception of receptions) {
         stats.receptions_seen += 1;
         const admissionDate = unixToDate(reception.admissionDate);
-
         if (admissionDate && admissionDate > params.endDate) continue;
         if (admissionDate && admissionDate < params.startDate) {
           stopOffice = true;
@@ -459,25 +436,18 @@ async function findLastReceptionInWindow(params: {
 
         const receptionId = numeric(reception.id);
         let details: Record<string, unknown>[];
-
         try {
           details = await listReceptionDetails(receptionId, params.maxDetails);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-
           if (message.includes('Bsale API error 403')) {
-            stats.detail_errors.push({
-              reception_id: receptionId,
-              message: message.slice(0, 220),
-            });
+            stats.detail_errors.push({ reception_id: receptionId, message: message.slice(0, 220) });
             continue;
           }
-
           throw error;
         }
 
         const matchingDetails: Array<{ detail: Record<string, unknown>; variantId: number }> = [];
-
         for (const detail of details) {
           stats.details_seen += 1;
           const variant = (detail.variant ?? {}) as Record<string, unknown>;
@@ -487,7 +457,6 @@ async function findLastReceptionInWindow(params: {
         }
 
         if (!matchingDetails.length) continue;
-
         stats.matches += matchingDetails.length;
         const candidate = buildReception({
           reception,
@@ -552,18 +521,10 @@ async function findLastReceptionProgressive(params: {
 
   if (windowResult.last_reception) {
     stats.stopped_after_first_match = true;
-    return {
-      last_reception: windowResult.last_reception,
-      stats,
-      start_date_used: startDate,
-    };
+    return { last_reception: windowResult.last_reception, stats, start_date_used: startDate };
   }
 
-  return {
-    last_reception: null,
-    stats,
-    start_date_used: startDate,
-  };
+  return { last_reception: null, stats, start_date_used: startDate };
 }
 
 async function scanDocumentsSince(params: {
@@ -581,94 +542,73 @@ async function scanDocumentsSince(params: {
     details_seen: 0,
     detail_requests: 0,
     matches: 0,
+    source: 'SUPABASE_BSALE_DOCUMENT_DETAILS',
     detail_errors: [],
   };
 
-  for (const officeId of params.officeIds) {
-    let day = params.startDate;
-    while (day <= params.endDate) {
-      const startUnix = dateToUnixUtc(day, false);
-      const endUnix = dateToUnixUtc(day, true);
+  const documentIds = new Set<number>();
+  let offset = 0;
 
-      for (const documentTypeId of DEFAULT_DOCUMENT_TYPES) {
-        let offset = 0;
-        let pageNumber = 0;
-        while (true) {
-          if (params.maxPagesPerDayType > 0 && pageNumber >= params.maxPagesPerDayType) break;
+  while (true) {
+    const rows = await supabaseGet('bsale_document_details', {
+      select:
+        'document_detail_id,document_id,emission_date,office_id,document_type_id,movement_type,variant_id,quantity,quantity_signed,total_amount,total_amount_signed,unit_value,synced_at',
+      office_id: inFilter(params.officeIds),
+      variant_id: inFilter(sortedVariantIds(params.variantIds)),
+      emission_date: `gte.${params.startDate}`,
+      and: `(emission_date.lte.${params.endDate})`,
+      order: 'emission_date.asc,document_id.asc',
+      limit: String(DOCUMENT_INDEX_PAGE_LIMIT),
+      offset: String(offset),
+    });
 
-          const page = await bsaleGet('documents.json', {
-            officeid: officeId,
-            state: 0,
-            documenttypeid: documentTypeId,
-            emissiondaterange: `[${startUnix},${endUnix}]`,
-            expand: '[office,document_type,details]',
-            limit: DOCUMENT_PAGE_LIMIT,
-            offset,
-          });
+    stats.pages += 1;
+    const pageRows = (rows ?? []) as Record<string, unknown>[];
+    if (!pageRows.length) break;
 
-          const documents = (page.items ?? []) as Record<string, unknown>[];
-          const count = numeric(page.count);
-          stats.pages += 1;
-          pageNumber += 1;
+    for (const row of pageRows) {
+      const documentId = intOrNull(row.document_id);
+      if (documentId !== null) documentIds.add(documentId);
+      stats.details_seen += 1;
+      stats.matches += 1;
 
-          if (!documents.length) break;
+      const documentTypeId = numeric(row.document_type_id);
+      const movementType = String(row.movement_type || movementTypeForDocument(documentTypeId));
+      const group = movementType === 'DEVOLUCION' ? 'DEVOLUCION' : 'VENTA';
+      const quantity = numeric(row.quantity);
+      const amount = numeric(row.total_amount);
+      const signedQty = row.quantity_signed === null || row.quantity_signed === undefined
+        ? quantity * signForDocument(documentTypeId)
+        : numeric(row.quantity_signed);
+      const signedAmount = row.total_amount_signed === null || row.total_amount_signed === undefined
+        ? amount * signForDocument(documentTypeId)
+        : numeric(row.total_amount_signed);
 
-          for (const doc of documents) {
-            stats.documents_seen += 1;
-
-            let details: Record<string, unknown>[] = [];
-            try {
-              const detailResult = await getDocumentDetails(doc, params.maxDetails);
-              details = detailResult.items;
-              stats.detail_requests += detailResult.requests;
-            } catch (error) {
-              stats.detail_errors.push({
-                document_id: intOrNull(doc.id),
-                message: error instanceof Error ? error.message.slice(0, 220) : String(error).slice(0, 220),
-              });
-              continue;
-            }
-
-            for (const detail of details) {
-              stats.details_seen += 1;
-              const variant = (detail.variant ?? {}) as Record<string, unknown>;
-              const variantId = intOrNull(variant.id);
-              if (variantId === null || !params.variantIds.has(variantId)) continue;
-
-              const quantity = numeric(detail.quantity);
-              const amount = numeric(detail.totalAmount);
-              const sign = signForDocument(documentTypeId);
-              const movementType = movementTypeForDocument(documentTypeId);
-
-              movements.push({
-                source: 'documents',
-                movement_group: movementType === 'VENTA' ? 'VENTA' : 'DEVOLUCION',
-                movement_type: movementType,
-                office_id: officeId,
-                movement_date: unixToDate(doc.emissionDate),
-                document_id: intOrNull(doc.id),
-                document_detail_id: intOrNull(detail.id),
-                document_type_id: documentTypeId,
-                document_number: doc.number ?? doc.documentNumber ?? null,
-                variant_id: variantId,
-                quantity,
-                quantity_signed: quantity * sign,
-                total_amount: amount,
-                total_amount_signed: amount * sign,
-                note: `Documento ${doc.number ?? doc.id ?? ''}`.trim(),
-              });
-              stats.matches += 1;
-            }
-          }
-
-          offset += DOCUMENT_PAGE_LIMIT;
-          if (offset >= count) break;
-        }
-      }
-      day = addDays(day, 1);
+      movements.push({
+        source: 'documents_index',
+        movement_group: group,
+        movement_type: movementType,
+        office_id: numeric(row.office_id),
+        movement_date: row.emission_date ?? null,
+        document_id: documentId,
+        document_detail_id: intOrNull(row.document_detail_id),
+        document_type_id: documentTypeId,
+        document_number: documentId,
+        variant_id: intOrNull(row.variant_id),
+        quantity,
+        quantity_signed: signedQty,
+        total_amount: amount,
+        total_amount_signed: signedAmount,
+        note: `Documento ${documentId ?? ''}`.trim(),
+        index_synced_at: row.synced_at ?? null,
+      });
     }
+
+    if (pageRows.length < DOCUMENT_INDEX_PAGE_LIMIT) break;
+    offset += DOCUMENT_INDEX_PAGE_LIMIT;
   }
 
+  stats.documents_seen = documentIds.size;
   return { movements, stats };
 }
 
@@ -695,12 +635,7 @@ async function scanConsumptionsSince(params: {
   };
 
   for (const officeId of params.officeIds) {
-    const countPage = await bsaleGet('stocks/consumptions.json', {
-      officeid: officeId,
-      limit: 1,
-      offset: 0,
-    });
-
+    const countPage = await bsaleGet('stocks/consumptions.json', { officeid: officeId, limit: 1, offset: 0 });
     stats.count_requests += 1;
     const count = numeric(countPage.count);
     if (count <= 0) continue;
@@ -713,22 +648,15 @@ async function scanConsumptionsSince(params: {
     while (offset >= 0 && !stopOffice) {
       if (params.maxPagesPerOffice > 0 && pagesInOffice >= params.maxPagesPerOffice) break;
 
-      const page = await bsaleGet('stocks/consumptions.json', {
-        officeid: officeId,
-        limit: CONSUMPTION_PAGE_LIMIT,
-        offset,
-      });
-
+      const page = await bsaleGet('stocks/consumptions.json', { officeid: officeId, limit: CONSUMPTION_PAGE_LIMIT, offset });
       const consumptions = ((page.items ?? []) as Record<string, unknown>[]).slice().reverse();
       stats.pages += 1;
       pagesInOffice += 1;
-
       if (!consumptions.length) break;
 
       for (const consumption of consumptions) {
         const consumptionUnix = intOrNull(consumption.consumptionDate);
         if (consumptionUnix === null) continue;
-
         if (consumptionUnix > endUnix) continue;
         if (consumptionUnix < startUnix) continue;
 
@@ -784,7 +712,6 @@ async function scanConsumptionsSince(params: {
         .map((item) => intOrNull(item.consumptionDate))
         .filter((value): value is number => value !== null)
         .reduce((min, value) => Math.min(min, value), Number.POSITIVE_INFINITY);
-
       if (Number.isFinite(oldestInPage) && oldestInPage < startUnix) break;
       offset -= CONSUMPTION_PAGE_LIMIT;
     }
@@ -850,9 +777,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json();
     const query = String(body.query ?? '').trim();
-    const officeIds = Array.isArray(body.office_ids)
-      ? body.office_ids.map(Number).filter(Boolean)
-      : [2, 3, 4];
+    const officeIds = Array.isArray(body.office_ids) ? body.office_ids.map(Number).filter(Boolean) : [2, 3, 4];
     const lookbackDays = numeric(body.lookback_days ?? 365);
     const maxDocumentPagesPerDayType = numeric(body.max_document_pages_per_day_type ?? 0);
     const maxReceptionPagesPerOffice = numeric(body.max_reception_pages_per_office ?? 0);
@@ -881,7 +806,7 @@ Deno.serve(async (req) => {
       return new Response(
         JSON.stringify({
           found: false,
-          function_version: 'v2.1-reverse-receptions-consumptions',
+          function_version: FUNCTION_VERSION,
           query,
           office_ids: officeIds,
           message: 'No se encontró variant_id en bsale_stock_current ni bsale_sku_aliases.',
@@ -903,17 +828,12 @@ Deno.serve(async (req) => {
     });
 
     if (!receptionResult.last_reception) {
-      const summary = buildSummary({
-        stockMatches,
-        lastReception: null,
-        documentMovements: [],
-        consumptionMovements: [],
-      });
+      const summary = buildSummary({ stockMatches, lastReception: null, documentMovements: [], consumptionMovements: [] });
       return new Response(
         JSON.stringify({
           found: true,
           sell_through_found: false,
-          function_version: 'v2.1-reverse-receptions-consumptions',
+          function_version: FUNCTION_VERSION,
           query,
           office_ids: officeIds,
           variant_ids: sortedVariantIds(variantIds),
@@ -957,11 +877,7 @@ Deno.serve(async (req) => {
       maxDetails: maxConsumptionDetails,
     });
 
-    const movements = [
-      receptionResult.last_reception.movement,
-      ...documentResult.movements,
-      ...consumptionResult.movements,
-    ].sort((a, b) => {
+    const movements = [receptionResult.last_reception.movement, ...documentResult.movements, ...consumptionResult.movements].sort((a, b) => {
       const dateCompare = String(b.movement_date).localeCompare(String(a.movement_date));
       if (dateCompare !== 0) return dateCompare;
       return String(b.source).localeCompare(String(a.source));
@@ -978,7 +894,7 @@ Deno.serve(async (req) => {
       JSON.stringify({
         found: true,
         sell_through_found: true,
-        function_version: 'v2.1-reverse-receptions-consumptions',
+        function_version: FUNCTION_VERSION,
         query,
         office_ids: officeIds,
         variant_ids: sortedVariantIds(variantIds),
@@ -989,17 +905,14 @@ Deno.serve(async (req) => {
         last_reception: receptionResult.last_reception.movement,
         summary,
         movements,
-        scan_stats: {
-          receptions: receptionResult.stats,
-          documents: documentResult.stats,
-          consumptions: consumptionResult.stats,
-        },
+        scan_stats: { receptions: receptionResult.stats, documents: documentResult.stats, consumptions: consumptionResult.stats },
         diagnostic: {
           phase: 'complete',
           lookup_windows_used: receptionResult.stats.lookup_windows,
           reception_order_strategy: receptionResult.stats.assumed_reception_order,
           last_reception_date: receptionResult.last_reception.date,
           document_scan_start: scanStartDate,
+          document_scan_source: documentResult.stats.source,
           consumption_scan_start: scanStartDate,
         },
       }),
@@ -1007,10 +920,7 @@ Deno.serve(async (req) => {
     );
   } catch (error) {
     return new Response(
-      JSON.stringify({
-        function_version: 'v2.1-reverse-receptions-consumptions',
-        error: error instanceof Error ? error.message : String(error),
-      }),
+      JSON.stringify({ function_version: FUNCTION_VERSION, error: error instanceof Error ? error.message : String(error) }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   }
