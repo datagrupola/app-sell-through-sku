@@ -1,7 +1,5 @@
-const SUPABASE_URL =
-  Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
-
-const FUNCTION_VERSION = 'v2.2-db-document-index';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
+const FUNCTION_VERSION = 'v2.3-closed-through-yesterday';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -9,226 +7,81 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const SALE_DOCUMENT_TYPES = new Set([10, 40, 44]);
-const RETURN_DOCUMENT_TYPES = new Set([39, 41]);
-const DEFAULT_DOCUMENT_TYPES = [10, 39, 40, 41, 44];
-const RECEPTION_PAGE_LIMIT = 50;
-const DETAIL_PAGE_LIMIT = 100;
-const DOCUMENT_INDEX_PAGE_LIMIT = 1000;
-const CONSUMPTION_PAGE_LIMIT = 50;
+const SALE_TYPES = new Set([10, 40, 44]);
+const RETURN_TYPES = new Set([39, 41]);
+const RECEPTION_LIMIT = 50;
+const DETAIL_LIMIT = 100;
+const DOC_INDEX_LIMIT = 1000;
+const CONSUMPTION_LIMIT = 50;
 
-type StockIndexRow = {
-  office_id: number;
-  variant_id: number;
-  stock_id: number;
-  sku_norm: string | null;
-  barcode_norm: string | null;
-  quantity: number;
-  quantity_reserved: number;
-  quantity_available: number;
-  synced_at: string | null;
-};
+type Row = Record<string, unknown>;
+type ReceptionResult = null | { movement: Row; date: string; reception_id: number; quantity: number; cost: number };
 
-type AliasRow = {
-  variant_id: number;
-  sku_norm: string | null;
-  barcode_norm: string | null;
-  product_id: number | null;
-  description: string | null;
-  last_seen_at: string | null;
-};
-
-type Movement = Record<string, unknown>;
-
-type ReceptionResult = null | {
-  movement: Movement;
-  date: string;
-  reception_id: number;
-  quantity: number;
-  cost: number;
-};
-
-type ReceptionStats = {
-  pages: number;
-  count_requests: number;
-  receptions_seen: number;
-  details_seen: number;
-  matches: number;
-  lookup_windows: number[];
-  stopped_after_first_match: boolean;
-  assumed_reception_order: string;
-  start_offsets: Array<{ office_id: number; count: number; start_offset: number }>;
-  detail_errors: Array<{ reception_id: number; message: string }>;
-};
-
-type DocumentStats = {
-  pages: number;
-  documents_seen: number;
-  details_seen: number;
-  detail_requests: number;
-  matches: number;
-  source: string;
-  detail_errors: Array<{ document_id: number | null; message: string }>;
-};
-
-type ConsumptionStats = {
-  pages: number;
-  count_requests: number;
-  consumptions_seen_in_date_range: number;
-  details_seen: number;
-  detail_requests: number;
-  matches: number;
-  start_offsets: Array<{ office_id: number; count: number; start_offset: number }>;
-  detail_errors: Array<{ consumption_id: number | null; message: string }>;
-};
-
-function normalizeSku(value: unknown): string {
-  return String(value ?? '').trim().toUpperCase();
-}
-
-function normalizeBarcode(value: unknown): string {
-  return String(value ?? '').trim().replace(/\s+/g, '');
-}
-
-function numeric(value: unknown): number {
+const n = (value: unknown): number => {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
-}
+};
 
-function intOrNull(value: unknown): number | null {
+const i = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
-}
+};
 
-function boolValue(value: unknown): boolean {
-  return String(value) === '1' || value === true;
-}
+const b = (value: unknown): boolean => String(value) === '1' || value === true;
+const sku = (value: unknown): string => String(value ?? '').trim().toUpperCase();
+const barcode = (value: unknown): string => String(value ?? '').trim().replace(/\s+/g, '');
+const ymd = (unix: unknown): string | null => {
+  const parsed = i(unix);
+  return parsed === null ? null : new Date(parsed * 1000).toISOString().slice(0, 10);
+};
+const yesterdayUtc = (): string => {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+};
+const daysAgo = (days: number): string => {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+};
+const unixUtc = (dateText: string, end = false): number =>
+  Math.floor(new Date(`${dateText}${end ? 'T23:59:59Z' : 'T00:00:00Z'}`).getTime() / 1000);
+const inFilter = (values: Array<string | number>): string => `in.(${values.join(',')})`;
+const sortedIds = (set: Set<number>): number[] => Array.from(set).sort((a, b) => a - b);
+const docType = (typeId: number): string => SALE_TYPES.has(typeId) ? 'VENTA' : RETURN_TYPES.has(typeId) ? 'DEVOLUCION' : 'OTRO_DOCUMENTO';
+const docSign = (typeId: number): number => RETURN_TYPES.has(typeId) ? -1 : 1;
 
-function unixToDate(value: unknown): string | null {
-  const parsed = intOrNull(value);
-  if (parsed === null) return null;
-  return new Date(parsed * 1000).toISOString().slice(0, 10);
-}
-
-function todayUtc(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function dateDaysAgo(days: number): string {
-  const current = new Date();
-  current.setUTCDate(current.getUTCDate() - days);
-  return current.toISOString().slice(0, 10);
-}
-
-function dateToUnixUtc(dateText: string, endOfDay = false): number {
-  const suffix = endOfDay ? 'T23:59:59Z' : 'T00:00:00Z';
-  return Math.floor(new Date(`${dateText}${suffix}`).getTime() / 1000);
-}
-
-function dateInRange(dateText: string | null, startDate: string, endDate: string): boolean {
-  if (!dateText) return false;
-  return dateText >= startDate && dateText <= endDate;
-}
-
-function movementTypeForDocument(documentTypeId: number): string {
-  if (SALE_DOCUMENT_TYPES.has(documentTypeId)) return 'VENTA';
-  if (RETURN_DOCUMENT_TYPES.has(documentTypeId)) return 'DEVOLUCION';
-  return 'OTRO_DOCUMENTO';
-}
-
-function signForDocument(documentTypeId: number): number {
-  return RETURN_DOCUMENT_TYPES.has(documentTypeId) ? -1 : 1;
-}
-
-function classifyReception(reception: Record<string, unknown>): string {
-  const internalDispatch = (reception.internalDispatch ?? {}) as Record<string, unknown>;
-  const internalDispatchId = intOrNull(internalDispatch.id ?? reception.internalDispatchId);
-  if (internalDispatchId) return 'RECEPCION_DESPACHO_INTERNO';
-  if (boolValue(reception.updateStock)) return 'ENTRADA_STOCK';
-  return 'ENTRADA_IMPORTADA_AMBIGUA';
-}
-
-function betterReception(candidate: ReceptionResult, current: ReceptionResult): boolean {
-  if (!candidate) return false;
-  if (!current) return true;
-  if (candidate.date > current.date) return true;
-  if (candidate.date < current.date) return false;
-  return candidate.reception_id > current.reception_id;
-}
-
-function sortedVariantIds(variantIds: Set<number>): number[] {
-  return Array.from(variantIds).sort((a, b) => a - b);
-}
-
-function inFilter(values: Array<number | string>): string {
-  return `in.(${values.join(',')})`;
-}
-
-async function supabaseGet(table: string, params: Record<string, string>) {
-  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (!serviceRoleKey) throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY secret');
-
+async function sb(table: string, params: Record<string, string>) {
+  const key = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!key) throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY secret');
   const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      apikey: serviceRoleKey,
-      Authorization: `Bearer ${serviceRoleKey}`,
-      'Content-Type': 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase index error ${response.status}: ${body.slice(0, 500)} | table=${table}`);
-  }
-
-  return response.json();
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res = await fetch(url, { headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' } });
+  if (!res.ok) throw new Error(`Supabase index error ${res.status}: ${(await res.text()).slice(0, 500)} | table=${table}`);
+  return res.json();
 }
 
-async function bsaleGet(path: string, params: Record<string, string | number> = {}) {
+async function bsale(path: string, params: Record<string, string | number> = {}) {
   const token = Deno.env.get('BSALE_ACCESS_TOKEN');
   if (!token) throw new Error('Missing BSALE_ACCESS_TOKEN secret');
-
   const url = new URL(`https://api.bsale.com.mx/v1/${path}`);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { access_token: token, 'Content-Type': 'application/json' },
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Bsale API error ${response.status}: ${body.slice(0, 500)} | url=${url.toString()}`);
-  }
-
-  return response.json();
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+  const res = await fetch(url, { headers: { access_token: token, 'Content-Type': 'application/json' } });
+  if (!res.ok) throw new Error(`Bsale API error ${res.status}: ${(await res.text()).slice(0, 500)} | url=${url.toString()}`);
+  return res.json();
 }
 
-async function findStockIndex(query: string, officeIds: number[]): Promise<StockIndexRow[]> {
-  const skuQuery = normalizeSku(query);
-  const barcodeQuery = normalizeBarcode(query);
-  const officeFilter = inFilter(officeIds);
-  const rows: StockIndexRow[] = [];
-
-  for (const [column, value] of [
-    ['sku_norm', skuQuery],
-    ['barcode_norm', barcodeQuery],
-  ]) {
+async function findStockRows(query: string, officeIds: number[]) {
+  const rows: Row[] = [];
+  for (const [column, value] of [['sku_norm', sku(query)], ['barcode_norm', barcode(query)]]) {
     if (!value) continue;
-    const found = await supabaseGet('bsale_stock_current', {
-      select:
-        'office_id,variant_id,stock_id,sku_norm,barcode_norm,quantity,quantity_reserved,quantity_available,synced_at',
+    rows.push(...await sb('bsale_stock_current', {
+      select: 'office_id,variant_id,stock_id,sku_norm,barcode_norm,quantity,quantity_reserved,quantity_available,synced_at',
       [column]: `eq.${value}`,
-      office_id: officeFilter,
-    });
-    rows.push(...found);
+      office_id: inFilter(officeIds),
+    }));
   }
-
   const seen = new Set<string>();
   return rows.filter((row) => {
     const key = `${row.office_id}:${row.variant_id}:${row.stock_id}`;
@@ -238,23 +91,15 @@ async function findStockIndex(query: string, officeIds: number[]): Promise<Stock
   });
 }
 
-async function findAliasIndex(query: string): Promise<AliasRow[]> {
-  const skuQuery = normalizeSku(query);
-  const barcodeQuery = normalizeBarcode(query);
-  const rows: AliasRow[] = [];
-
-  for (const [column, value] of [
-    ['sku_norm', skuQuery],
-    ['barcode_norm', barcodeQuery],
-  ]) {
+async function findAliasRows(query: string) {
+  const rows: Row[] = [];
+  for (const [column, value] of [['sku_norm', sku(query)], ['barcode_norm', barcode(query)]]) {
     if (!value) continue;
-    const found = await supabaseGet('bsale_sku_aliases', {
+    rows.push(...await sb('bsale_sku_aliases', {
       select: 'variant_id,sku_norm,barcode_norm,product_id,description,last_seen_at',
       [column]: `eq.${value}`,
-    });
-    rows.push(...found);
+    }));
   }
-
   const seen = new Set<string>();
   return rows.filter((row) => {
     const key = `${row.variant_id}:${row.sku_norm}:${row.barcode_norm}`;
@@ -264,664 +109,340 @@ async function findAliasIndex(query: string): Promise<AliasRow[]> {
   });
 }
 
-async function getLiveStockMatches(stockRows: StockIndexRow[]) {
-  const matches = [];
-  for (const row of stockRows) {
+async function liveStocks(rows: Row[]) {
+  const out: Row[] = [];
+  for (const row of rows) {
     try {
-      const live = await bsaleGet(`stocks/${row.stock_id}.json`, { expand: '[office,variant]' });
+      const live = await bsale(`stocks/${row.stock_id}.json`, { expand: '[office,variant]' });
       const office = live.office ?? {};
       const variant = live.variant ?? {};
-      matches.push({
-        source: 'BSALE_LIVE',
-        live_ok: true,
-        office_id: numeric(office.id ?? row.office_id),
-        office_name: office.name ?? null,
-        variant_id: numeric(variant.id ?? row.variant_id),
-        stock_id: numeric(live.id ?? row.stock_id),
-        sku: variant.code ?? row.sku_norm,
-        barcode: variant.barCode ?? row.barcode_norm,
-        quantity: numeric(live.quantity ?? row.quantity),
-        quantity_reserved: numeric(live.quantityReserved ?? row.quantity_reserved),
-        quantity_available: numeric(live.quantityAvailable ?? row.quantity_available),
-        index_synced_at: row.synced_at,
+      out.push({
+        source: 'BSALE_LIVE', live_ok: true,
+        office_id: n(office.id ?? row.office_id), office_name: office.name ?? null,
+        variant_id: n(variant.id ?? row.variant_id), stock_id: n(live.id ?? row.stock_id),
+        sku: variant.code ?? row.sku_norm, barcode: variant.barCode ?? row.barcode_norm,
+        quantity: n(live.quantity ?? row.quantity), quantity_reserved: n(live.quantityReserved ?? row.quantity_reserved),
+        quantity_available: n(live.quantityAvailable ?? row.quantity_available), index_synced_at: row.synced_at,
       });
-    } catch (error) {
-      matches.push({
-        source: 'SUPABASE_INDEX_FALLBACK',
-        live_ok: false,
-        live_error: error instanceof Error ? error.message : String(error),
-        office_id: row.office_id,
-        office_name: null,
-        variant_id: row.variant_id,
-        stock_id: row.stock_id,
-        sku: row.sku_norm,
-        barcode: row.barcode_norm,
-        quantity: numeric(row.quantity),
-        quantity_reserved: numeric(row.quantity_reserved),
-        quantity_available: numeric(row.quantity_available),
+    } catch (err) {
+      out.push({
+        source: 'SUPABASE_INDEX_FALLBACK', live_ok: false,
+        live_error: err instanceof Error ? err.message : String(err),
+        office_id: row.office_id, office_name: null, variant_id: row.variant_id, stock_id: row.stock_id,
+        sku: row.sku_norm, barcode: row.barcode_norm,
+        quantity: n(row.quantity), quantity_reserved: n(row.quantity_reserved), quantity_available: n(row.quantity_available),
         index_synced_at: row.synced_at,
       });
     }
   }
-  return matches;
+  return out;
 }
 
-async function listPagedDetails(path: string, maxDetails: number) {
-  const items: Record<string, unknown>[] = [];
+async function details(path: string, maxDetails: number) {
+  const items: Row[] = [];
   let offset = 0;
   let requests = 0;
-
   while (true) {
-    const page = await bsaleGet(path, { limit: DETAIL_PAGE_LIMIT, offset });
+    const page = await bsale(path, { limit: DETAIL_LIMIT, offset });
     requests += 1;
-    const pageItems = (page.items ?? []) as Record<string, unknown>[];
+    const pageItems = (page.items ?? []) as Row[];
     items.push(...pageItems);
-    const count = numeric(page.count);
-    offset += DETAIL_PAGE_LIMIT;
-
     if (maxDetails > 0 && items.length >= maxDetails) return { items: items.slice(0, maxDetails), requests };
-    if (!pageItems.length || offset >= count) break;
+    offset += DETAIL_LIMIT;
+    if (!pageItems.length || offset >= n(page.count)) break;
   }
-
   return { items, requests };
 }
 
-async function listReceptionDetails(receptionId: number, maxDetails: number) {
-  const result = await listPagedDetails(`stocks/receptions/${receptionId}/details.json`, maxDetails);
-  return result.items;
+function classifyReception(reception: Row): string {
+  const internalDispatch = (reception.internalDispatch ?? {}) as Row;
+  const internalDispatchId = i(internalDispatch.id ?? reception.internalDispatchId);
+  if (internalDispatchId) return 'RECEPCION_DESPACHO_INTERNO';
+  if (b(reception.updateStock)) return 'ENTRADA_STOCK';
+  return 'ENTRADA_IMPORTADA_AMBIGUA';
 }
 
-async function listConsumptionDetails(consumptionId: number, maxDetails: number) {
-  return listPagedDetails(`stocks/consumptions/${consumptionId}/details.json`, maxDetails);
-}
-
-function buildReception(params: {
-  reception: Record<string, unknown>;
-  officeId: number;
-  admissionDate: string;
-  receptionId: number;
-  matchingDetails: Array<{ detail: Record<string, unknown>; variantId: number }>;
-}): ReceptionResult {
-  const firstMatch = params.matchingDetails[0];
-  const firstDetail = firstMatch.detail;
-  const quantity = params.matchingDetails.reduce((sum, item) => sum + numeric(item.detail.quantity), 0);
-  const variantStock = params.matchingDetails.reduce((sum, item) => sum + numeric(item.detail.variantStock), 0);
-
+function buildReception(reception: Row, officeId: number, date: string, receptionId: number, matches: Array<{ detail: Row; variantId: number }>): ReceptionResult {
+  const first = matches[0];
+  const qty = matches.reduce((sum, item) => sum + n(item.detail.quantity), 0);
+  const variantStock = matches.reduce((sum, item) => sum + n(item.detail.variantStock), 0);
   return {
-    date: params.admissionDate,
-    reception_id: params.receptionId,
-    quantity,
-    cost: numeric(firstDetail.cost),
+    date, reception_id: receptionId, quantity: qty, cost: n(first.detail.cost),
     movement: {
-      source: 'receptions',
-      movement_group: 'ENTRADA',
-      movement_type: classifyReception(params.reception),
-      office_id: params.officeId,
-      movement_date: params.admissionDate,
-      reception_id: params.receptionId,
-      reception_detail_id: intOrNull(firstDetail.id),
-      variant_id: firstMatch.variantId,
-      quantity,
-      quantity_signed: quantity,
-      cost: numeric(firstDetail.cost),
-      variant_stock: variantStock,
-      document: params.reception.document ?? null,
-      document_number: params.reception.documentNumber ?? null,
-      internal_dispatch_id: intOrNull(params.reception.internalDispatchId),
-      note: params.reception.note || params.reception.document || null,
+      source: 'receptions', movement_group: 'ENTRADA', movement_type: classifyReception(reception), office_id: officeId,
+      movement_date: date, reception_id: receptionId, reception_detail_id: i(first.detail.id), variant_id: first.variantId,
+      quantity: qty, quantity_signed: qty, cost: n(first.detail.cost), variant_stock: variantStock,
+      document: reception.document ?? null, document_number: reception.documentNumber ?? null,
+      internal_dispatch_id: i(reception.internalDispatchId), note: reception.note || reception.document || null,
     },
   };
 }
 
-async function findLastReceptionInWindow(params: {
-  officeIds: number[];
-  variantIds: Set<number>;
-  startDate: string;
-  endDate: string;
-  maxDetails: number;
-  maxPagesPerOffice: number;
-}) {
-  let latest: ReceptionResult = null;
-  const stats = {
-    pages: 0,
-    count_requests: 0,
-    receptions_seen: 0,
-    details_seen: 0,
-    matches: 0,
-    start_offsets: [] as Array<{ office_id: number; count: number; start_offset: number }>,
-    detail_errors: [] as Array<{ reception_id: number; message: string }>,
-  };
+async function findLastReception(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string, maxDetails: number, maxPages: number) {
+  let last: ReceptionResult = null;
+  const stats = { pages: 0, count_requests: 0, receptions_seen: 0, details_seen: 0, matches: 0, lookup_windows: [] as number[], stopped_after_first_match: false, assumed_reception_order: 'oldest_first_reverse_scan', start_offsets: [] as Row[], detail_errors: [] as Row[] };
 
-  for (const officeId of params.officeIds) {
-    const countPage = await bsaleGet('stocks/receptions.json', {
-      officeid: officeId,
-      expand: '[office]',
-      limit: 1,
-      offset: 0,
-    });
-
+  for (const officeId of officeIds) {
+    const countPage = await bsale('stocks/receptions.json', { officeid: officeId, expand: '[office]', limit: 1, offset: 0 });
     stats.count_requests += 1;
-    const count = numeric(countPage.count);
-    if (count <= 0) continue;
-
-    let offset = Math.max(0, count - RECEPTION_PAGE_LIMIT);
-    let pagesInOffice = 0;
-    let stopOffice = false;
+    const count = n(countPage.count);
+    if (!count) continue;
+    let offset = Math.max(0, count - RECEPTION_LIMIT);
+    let pages = 0;
+    let stop = false;
     stats.start_offsets.push({ office_id: officeId, count, start_offset: offset });
 
-    while (offset >= 0 && !stopOffice) {
-      if (params.maxPagesPerOffice > 0 && pagesInOffice >= params.maxPagesPerOffice) break;
-
-      const page = await bsaleGet('stocks/receptions.json', {
-        officeid: officeId,
-        expand: '[office]',
-        limit: RECEPTION_PAGE_LIMIT,
-        offset,
-      });
-
-      const receptions = ((page.items ?? []) as Record<string, unknown>[]).slice().reverse();
+    while (offset >= 0 && !stop) {
+      if (maxPages > 0 && pages >= maxPages) break;
+      const page = await bsale('stocks/receptions.json', { officeid: officeId, expand: '[office]', limit: RECEPTION_LIMIT, offset });
+      const receptions = ((page.items ?? []) as Row[]).slice().reverse();
       stats.pages += 1;
-      pagesInOffice += 1;
+      pages += 1;
       if (!receptions.length) break;
 
       for (const reception of receptions) {
         stats.receptions_seen += 1;
-        const admissionDate = unixToDate(reception.admissionDate);
-        if (admissionDate && admissionDate > params.endDate) continue;
-        if (admissionDate && admissionDate < params.startDate) {
-          stopOffice = true;
-          break;
-        }
-        if (!dateInRange(admissionDate, params.startDate, params.endDate)) continue;
-
-        const receptionId = numeric(reception.id);
-        let details: Record<string, unknown>[];
+        const date = ymd(reception.admissionDate);
+        if (date && date > endDate) continue;
+        if (date && date < startDate) { stop = true; break; }
+        if (!date || date < startDate || date > endDate) continue;
+        const receptionId = n(reception.id);
+        let dets: Row[] = [];
         try {
-          details = await listReceptionDetails(receptionId, params.maxDetails);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Bsale API error 403')) {
-            stats.detail_errors.push({ reception_id: receptionId, message: message.slice(0, 220) });
+          dets = (await details(`stocks/receptions/${receptionId}/details.json`, maxDetails)).items;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('Bsale API error 403')) {
+            stats.detail_errors.push({ reception_id: receptionId, message: msg.slice(0, 220) });
             continue;
           }
-          throw error;
+          throw err;
         }
-
-        const matchingDetails: Array<{ detail: Record<string, unknown>; variantId: number }> = [];
-        for (const detail of details) {
+        const matches: Array<{ detail: Row; variantId: number }> = [];
+        for (const detail of dets) {
           stats.details_seen += 1;
-          const variant = (detail.variant ?? {}) as Record<string, unknown>;
-          const variantId = intOrNull(variant.id);
-          if (variantId === null || !params.variantIds.has(variantId)) continue;
-          matchingDetails.push({ detail, variantId });
+          const variantId = i((detail.variant as Row | undefined)?.id);
+          if (variantId !== null && variantIds.has(variantId)) matches.push({ detail, variantId });
         }
-
-        if (!matchingDetails.length) continue;
-        stats.matches += matchingDetails.length;
-        const candidate = buildReception({
-          reception,
-          officeId,
-          admissionDate: String(admissionDate),
-          receptionId,
-          matchingDetails,
-        });
-
-        if (betterReception(candidate, latest)) latest = candidate;
-        stopOffice = true;
+        if (!matches.length) continue;
+        stats.matches += matches.length;
+        const candidate = buildReception(reception, officeId, date, receptionId, matches);
+        if (!last || candidate!.date > last.date || (candidate!.date === last.date && candidate!.reception_id > last.reception_id)) last = candidate;
+        stop = true;
         break;
       }
-
-      offset -= RECEPTION_PAGE_LIMIT;
+      offset -= RECEPTION_LIMIT;
     }
   }
-
-  return { last_reception: latest, stats };
+  stats.stopped_after_first_match = Boolean(last);
+  return { last_reception: last, stats };
 }
 
-async function findLastReceptionProgressive(params: {
-  officeIds: number[];
-  variantIds: Set<number>;
-  lookbackDays: number;
-  endDate: string;
-  maxDetails: number;
-  maxPagesPerOffice: number;
-}) {
-  const requestedLookback = Math.max(1, Math.trunc(params.lookbackDays || 365));
-  const startDate = dateDaysAgo(requestedLookback);
-
-  const stats: ReceptionStats = {
-    pages: 0,
-    count_requests: 0,
-    receptions_seen: 0,
-    details_seen: 0,
-    matches: 0,
-    lookup_windows: [requestedLookback],
-    stopped_after_first_match: false,
-    assumed_reception_order: 'oldest_first_reverse_scan',
-    start_offsets: [],
-    detail_errors: [],
-  };
-
-  const windowResult = await findLastReceptionInWindow({
-    officeIds: params.officeIds,
-    variantIds: params.variantIds,
-    startDate,
-    endDate: params.endDate,
-    maxDetails: params.maxDetails,
-    maxPagesPerOffice: params.maxPagesPerOffice,
-  });
-
-  stats.pages += windowResult.stats.pages;
-  stats.count_requests += windowResult.stats.count_requests;
-  stats.receptions_seen += windowResult.stats.receptions_seen;
-  stats.details_seen += windowResult.stats.details_seen;
-  stats.matches += windowResult.stats.matches;
-  stats.start_offsets.push(...windowResult.stats.start_offsets);
-  stats.detail_errors.push(...(windowResult.stats.detail_errors ?? []));
-
-  if (windowResult.last_reception) {
-    stats.stopped_after_first_match = true;
-    return { last_reception: windowResult.last_reception, stats, start_date_used: startDate };
-  }
-
-  return { last_reception: null, stats, start_date_used: startDate };
-}
-
-async function scanDocumentsSince(params: {
-  officeIds: number[];
-  variantIds: Set<number>;
-  startDate: string;
-  endDate: string;
-  maxPagesPerDayType: number;
-  maxDetails: number;
-}) {
-  const movements: Movement[] = [];
-  const stats: DocumentStats = {
-    pages: 0,
-    documents_seen: 0,
-    details_seen: 0,
-    detail_requests: 0,
-    matches: 0,
-    source: 'SUPABASE_BSALE_DOCUMENT_DETAILS',
-    detail_errors: [],
-  };
-
+async function scanDocuments(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string) {
+  const movements: Row[] = [];
+  const stats = { pages: 0, documents_seen: 0, details_seen: 0, detail_requests: 0, matches: 0, source: 'SUPABASE_BSALE_DOCUMENT_DETAILS', detail_errors: [] as Row[] };
   const documentIds = new Set<number>();
   let offset = 0;
 
   while (true) {
-    const rows = await supabaseGet('bsale_document_details', {
-      select:
-        'document_detail_id,document_id,emission_date,office_id,document_type_id,movement_type,variant_id,quantity,quantity_signed,total_amount,total_amount_signed,unit_value,synced_at',
-      office_id: inFilter(params.officeIds),
-      variant_id: inFilter(sortedVariantIds(params.variantIds)),
-      emission_date: `gte.${params.startDate}`,
-      and: `(emission_date.lte.${params.endDate})`,
-      order: 'emission_date.asc,document_id.asc',
-      limit: String(DOCUMENT_INDEX_PAGE_LIMIT),
-      offset: String(offset),
+    const rows = await sb('bsale_document_details', {
+      select: 'document_detail_id,document_id,emission_date,office_id,document_type_id,movement_type,variant_id,quantity,quantity_signed,total_amount,total_amount_signed,unit_value,synced_at',
+      office_id: inFilter(officeIds), variant_id: inFilter(sortedIds(variantIds)),
+      emission_date: `gte.${startDate}`, and: `(emission_date.lte.${endDate})`,
+      order: 'emission_date.asc,document_id.asc', limit: String(DOC_INDEX_LIMIT), offset: String(offset),
     });
-
     stats.pages += 1;
-    const pageRows = (rows ?? []) as Record<string, unknown>[];
+    const pageRows = (rows ?? []) as Row[];
     if (!pageRows.length) break;
 
     for (const row of pageRows) {
-      const documentId = intOrNull(row.document_id);
+      const documentId = i(row.document_id);
       if (documentId !== null) documentIds.add(documentId);
       stats.details_seen += 1;
       stats.matches += 1;
-
-      const documentTypeId = numeric(row.document_type_id);
-      const movementType = String(row.movement_type || movementTypeForDocument(documentTypeId));
+      const typeId = n(row.document_type_id);
+      const movementType = String(row.movement_type || docType(typeId));
       const group = movementType === 'DEVOLUCION' ? 'DEVOLUCION' : 'VENTA';
-      const quantity = numeric(row.quantity);
-      const amount = numeric(row.total_amount);
-      const signedQty = row.quantity_signed === null || row.quantity_signed === undefined
-        ? quantity * signForDocument(documentTypeId)
-        : numeric(row.quantity_signed);
-      const signedAmount = row.total_amount_signed === null || row.total_amount_signed === undefined
-        ? amount * signForDocument(documentTypeId)
-        : numeric(row.total_amount_signed);
-
+      const qty = n(row.quantity);
+      const amount = n(row.total_amount);
       movements.push({
-        source: 'documents_index',
-        movement_group: group,
-        movement_type: movementType,
-        office_id: numeric(row.office_id),
-        movement_date: row.emission_date ?? null,
-        document_id: documentId,
-        document_detail_id: intOrNull(row.document_detail_id),
-        document_type_id: documentTypeId,
-        document_number: documentId,
-        variant_id: intOrNull(row.variant_id),
-        quantity,
-        quantity_signed: signedQty,
+        source: 'documents_index', movement_group: group, movement_type: movementType, office_id: n(row.office_id),
+        movement_date: row.emission_date ?? null, document_id: documentId, document_detail_id: i(row.document_detail_id),
+        document_type_id: typeId, document_number: documentId, variant_id: i(row.variant_id), quantity: qty,
+        quantity_signed: row.quantity_signed === null || row.quantity_signed === undefined ? qty * docSign(typeId) : n(row.quantity_signed),
         total_amount: amount,
-        total_amount_signed: signedAmount,
-        note: `Documento ${documentId ?? ''}`.trim(),
-        index_synced_at: row.synced_at ?? null,
+        total_amount_signed: row.total_amount_signed === null || row.total_amount_signed === undefined ? amount * docSign(typeId) : n(row.total_amount_signed),
+        note: `Documento ${documentId ?? ''}`.trim(), index_synced_at: row.synced_at ?? null,
       });
     }
-
-    if (pageRows.length < DOCUMENT_INDEX_PAGE_LIMIT) break;
-    offset += DOCUMENT_INDEX_PAGE_LIMIT;
+    if (pageRows.length < DOC_INDEX_LIMIT) break;
+    offset += DOC_INDEX_LIMIT;
   }
-
   stats.documents_seen = documentIds.size;
   return { movements, stats };
 }
 
-async function scanConsumptionsSince(params: {
-  officeIds: number[];
-  variantIds: Set<number>;
-  startDate: string;
-  endDate: string;
-  maxPagesPerOffice: number;
-  maxDetails: number;
-}) {
-  const startUnix = dateToUnixUtc(params.startDate, false);
-  const endUnix = dateToUnixUtc(params.endDate, true);
-  const movements: Movement[] = [];
-  const stats: ConsumptionStats = {
-    pages: 0,
-    count_requests: 0,
-    consumptions_seen_in_date_range: 0,
-    details_seen: 0,
-    detail_requests: 0,
-    matches: 0,
-    start_offsets: [],
-    detail_errors: [],
-  };
+async function scanConsumptions(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string, maxPages: number, maxDetails: number) {
+  const startUnix = unixUtc(startDate);
+  const endUnix = unixUtc(endDate, true);
+  const movements: Row[] = [];
+  const stats = { pages: 0, count_requests: 0, consumptions_seen_in_date_range: 0, details_seen: 0, detail_requests: 0, matches: 0, start_offsets: [] as Row[], detail_errors: [] as Row[] };
 
-  for (const officeId of params.officeIds) {
-    const countPage = await bsaleGet('stocks/consumptions.json', { officeid: officeId, limit: 1, offset: 0 });
+  for (const officeId of officeIds) {
+    const countPage = await bsale('stocks/consumptions.json', { officeid: officeId, limit: 1, offset: 0 });
     stats.count_requests += 1;
-    const count = numeric(countPage.count);
-    if (count <= 0) continue;
-
-    let offset = Math.max(0, count - CONSUMPTION_PAGE_LIMIT);
-    let pagesInOffice = 0;
-    let stopOffice = false;
+    const count = n(countPage.count);
+    if (!count) continue;
+    let offset = Math.max(0, count - CONSUMPTION_LIMIT);
+    let pages = 0;
+    let stop = false;
     stats.start_offsets.push({ office_id: officeId, count, start_offset: offset });
 
-    while (offset >= 0 && !stopOffice) {
-      if (params.maxPagesPerOffice > 0 && pagesInOffice >= params.maxPagesPerOffice) break;
-
-      const page = await bsaleGet('stocks/consumptions.json', { officeid: officeId, limit: CONSUMPTION_PAGE_LIMIT, offset });
-      const consumptions = ((page.items ?? []) as Record<string, unknown>[]).slice().reverse();
+    while (offset >= 0 && !stop) {
+      if (maxPages > 0 && pages >= maxPages) break;
+      const page = await bsale('stocks/consumptions.json', { officeid: officeId, limit: CONSUMPTION_LIMIT, offset });
+      const consumptions = ((page.items ?? []) as Row[]).slice().reverse();
       stats.pages += 1;
-      pagesInOffice += 1;
+      pages += 1;
       if (!consumptions.length) break;
 
       for (const consumption of consumptions) {
-        const consumptionUnix = intOrNull(consumption.consumptionDate);
-        if (consumptionUnix === null) continue;
-        if (consumptionUnix > endUnix) continue;
-        if (consumptionUnix < startUnix) continue;
-
+        const consumptionUnix = i(consumption.consumptionDate);
+        if (consumptionUnix === null || consumptionUnix > endUnix || consumptionUnix < startUnix) continue;
         stats.consumptions_seen_in_date_range += 1;
-        const consumptionId = intOrNull(consumption.id);
+        const consumptionId = i(consumption.id);
         if (consumptionId === null) continue;
-
-        let details: Record<string, unknown>[] = [];
+        let dets: Row[] = [];
         try {
-          const detailResult = await listConsumptionDetails(consumptionId, params.maxDetails);
-          details = detailResult.items;
-          stats.detail_requests += detailResult.requests;
-        } catch (error) {
-          stats.detail_errors.push({
-            consumption_id: consumptionId,
-            message: error instanceof Error ? error.message.slice(0, 220) : String(error).slice(0, 220),
-          });
+          const result = await details(`stocks/consumptions/${consumptionId}/details.json`, maxDetails);
+          dets = result.items;
+          stats.detail_requests += result.requests;
+        } catch (err) {
+          stats.detail_errors.push({ consumption_id: consumptionId, message: err instanceof Error ? err.message.slice(0, 220) : String(err).slice(0, 220) });
           continue;
         }
-
-        for (const detail of details) {
+        for (const detail of dets) {
           stats.details_seen += 1;
-          const variant = (detail.variant ?? {}) as Record<string, unknown>;
-          const variantId = intOrNull(variant.id);
-          if (variantId === null || !params.variantIds.has(variantId)) continue;
-
-          const quantity = numeric(detail.quantity);
-          const updateStock = boolValue(consumption.updateStock);
-          const movementType = updateStock ? 'CONSUMO_AJUSTE_STOCK' : 'CONSUMO_SIN_AFECTAR_STOCK';
-
+          const variantId = i((detail.variant as Row | undefined)?.id);
+          if (variantId === null || !variantIds.has(variantId)) continue;
+          const qty = n(detail.quantity);
+          const updateStock = b(consumption.updateStock);
           movements.push({
-            source: 'consumptions',
-            movement_group: 'CONSUMO_AJUSTE',
-            movement_type: movementType,
-            office_id: officeId,
-            movement_date: unixToDate(consumptionUnix),
-            consumption_id: consumptionId,
-            consumption_detail_id: intOrNull(detail.id),
-            consumption_type_id: intOrNull(consumption.consumptionTypeId),
-            variant_id: variantId,
-            quantity,
-            quantity_signed: -quantity,
-            cost: numeric(detail.cost),
-            variant_stock: numeric(detail.variantStock),
-            update_stock: updateStock,
-            note: consumption.note ?? null,
+            source: 'consumptions', movement_group: 'CONSUMO_AJUSTE', movement_type: updateStock ? 'CONSUMO_AJUSTE_STOCK' : 'CONSUMO_SIN_AFECTAR_STOCK',
+            office_id: officeId, movement_date: ymd(consumptionUnix), consumption_id: consumptionId, consumption_detail_id: i(detail.id),
+            consumption_type_id: i(consumption.consumptionTypeId), variant_id: variantId, quantity: qty, quantity_signed: -qty,
+            cost: n(detail.cost), variant_stock: n(detail.variantStock), update_stock: updateStock, note: consumption.note ?? null,
           });
           stats.matches += 1;
         }
       }
 
-      const oldestInPage = consumptions
-        .map((item) => intOrNull(item.consumptionDate))
-        .filter((value): value is number => value !== null)
-        .reduce((min, value) => Math.min(min, value), Number.POSITIVE_INFINITY);
-      if (Number.isFinite(oldestInPage) && oldestInPage < startUnix) break;
-      offset -= CONSUMPTION_PAGE_LIMIT;
+      const oldest = consumptions.map((x) => i(x.consumptionDate)).filter((x): x is number => x !== null).reduce((min, x) => Math.min(min, x), Number.POSITIVE_INFINITY);
+      if (Number.isFinite(oldest) && oldest < startUnix) stop = true;
+      offset -= CONSUMPTION_LIMIT;
     }
   }
-
   return { movements, stats };
 }
 
-function buildSummary(params: {
-  stockMatches: Record<string, unknown>[];
-  lastReception: ReceptionResult;
-  documentMovements: Movement[];
-  consumptionMovements: Movement[];
-}) {
-  const received = numeric(params.lastReception?.quantity);
-  const sold = params.documentMovements
-    .filter((item) => item.movement_group === 'VENTA')
-    .reduce((sum, item) => sum + numeric(item.quantity), 0);
-  const returned = params.documentMovements
-    .filter((item) => item.movement_group === 'DEVOLUCION')
-    .reduce((sum, item) => sum + numeric(item.quantity), 0);
-  const consumed = params.consumptionMovements.reduce((sum, item) => sum + numeric(item.quantity), 0);
-  const consumedStockAffecting = params.consumptionMovements
-    .filter((item) => item.update_stock === true)
-    .reduce((sum, item) => sum + numeric(item.quantity), 0);
-  const consumedNonStockAffecting = consumed - consumedStockAffecting;
-  const stockActual = params.stockMatches.reduce((sum, item) => sum + numeric(item.quantity), 0);
-  const stockDisponible = params.stockMatches.reduce((sum, item) => sum + numeric(item.quantity_available), 0);
+function summary(stockMatches: Row[], lastReception: ReceptionResult, docMovements: Row[], consumptionMovements: Row[]) {
+  const received = n(lastReception?.quantity);
+  const sold = docMovements.filter((x) => x.movement_group === 'VENTA').reduce((sum, x) => sum + n(x.quantity), 0);
+  const returned = docMovements.filter((x) => x.movement_group === 'DEVOLUCION').reduce((sum, x) => sum + n(x.quantity), 0);
+  const consumed = consumptionMovements.reduce((sum, x) => sum + n(x.quantity), 0);
+  const consumedStock = consumptionMovements.filter((x) => x.update_stock === true).reduce((sum, x) => sum + n(x.quantity), 0);
   const netSold = sold - returned;
-  const stockOutflow = netSold + consumedStockAffecting;
+  const stockOutflow = netSold + consumedStock;
+  const stockActual = stockMatches.reduce((sum, x) => sum + n(x.quantity), 0);
+  const stockDisponible = stockMatches.reduce((sum, x) => sum + n(x.quantity_available), 0);
   const outflowExceedsReception = received > 0 && stockOutflow > received;
-
   return {
     piezas_recibidas_ultima_recepcion: received,
     piezas_vendidas_desde_ultima_recepcion: sold,
     piezas_devueltas_desde_ultima_recepcion: returned,
     piezas_netas_venta_desde_ultima_recepcion: netSold,
     piezas_consumidas_ajuste_desde_ultima_recepcion: consumed,
-    piezas_consumidas_ajuste_stock_desde_ultima_recepcion: consumedStockAffecting,
-    piezas_consumidas_sin_afectar_stock_desde_ultima_recepcion: consumedNonStockAffecting,
+    piezas_consumidas_ajuste_stock_desde_ultima_recepcion: consumedStock,
+    piezas_consumidas_sin_afectar_stock_desde_ultima_recepcion: consumed - consumedStock,
     piezas_salidas_stock_desde_ultima_recepcion: stockOutflow,
     stock_actual: stockActual,
     stock_disponible: stockDisponible,
     sell_through_pct: received > 0 ? Math.round((netSold / received) * 10000) / 100 : null,
     salidas_vs_recepcion_pct: received > 0 ? Math.round((stockOutflow / received) * 10000) / 100 : null,
     advertencia_salidas_superan_ultima_recepcion: outflowExceedsReception,
-    nota_trazabilidad: outflowExceedsReception
-      ? 'Las salidas de stock desde la última recepción superan la cantidad recibida; no se puede atribuir todo a ese lote sin una regla FIFO explícita.'
-      : null,
+    nota_trazabilidad: outflowExceedsReception ? 'Las salidas de stock desde la última recepción superan la cantidad recibida; no se puede atribuir todo a ese lote sin una regla FIFO explícita.' : null,
   };
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
   try {
     if (req.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-        status: 405,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     const body = await req.json();
     const query = String(body.query ?? '').trim();
     const officeIds = Array.isArray(body.office_ids) ? body.office_ids.map(Number).filter(Boolean) : [2, 3, 4];
-    const lookbackDays = numeric(body.lookback_days ?? 365);
-    const maxDocumentPagesPerDayType = numeric(body.max_document_pages_per_day_type ?? 0);
-    const maxReceptionPagesPerOffice = numeric(body.max_reception_pages_per_office ?? 0);
-    const maxConsumptionPagesPerOffice = numeric(body.max_consumption_pages_per_office ?? 0);
-    const maxReceptionDetails = Math.max(1000, numeric(body.max_reception_details ?? 1000));
-    const maxDocumentDetails = Math.max(1000, numeric(body.max_document_details ?? 1000));
-    const maxConsumptionDetails = Math.max(1000, numeric(body.max_consumption_details ?? 1000));
+    const lookbackDays = n(body.lookback_days ?? 365);
+    const maxReceptionPages = n(body.max_reception_pages_per_office ?? 0);
+    const maxConsumptionPages = n(body.max_consumption_pages_per_office ?? 0);
+    const maxReceptionDetails = Math.max(1000, n(body.max_reception_details ?? 1000));
+    const maxConsumptionDetails = Math.max(1000, n(body.max_consumption_details ?? 1000));
+    if (!query) return new Response(JSON.stringify({ error: 'Missing query' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
-    if (!query) {
-      return new Response(JSON.stringify({ error: 'Missing query' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    const endDate = todayUtc();
-    const stockIndexRows = await findStockIndex(query, officeIds);
-    const aliasRows = await findAliasIndex(query);
+    const endDate = yesterdayUtc();
+    const startDate = daysAgo(Math.max(1, Math.trunc(lookbackDays || 365)));
+    const stockRows = await findStockRows(query, officeIds);
+    const aliasRows = await findAliasRows(query);
     const variantIds = new Set<number>();
-    for (const row of stockIndexRows) if (row.variant_id) variantIds.add(Number(row.variant_id));
-    for (const row of aliasRows) if (row.variant_id) variantIds.add(Number(row.variant_id));
-
-    const stockMatches = await getLiveStockMatches(stockIndexRows);
+    stockRows.forEach((row) => { if (row.variant_id) variantIds.add(Number(row.variant_id)); });
+    aliasRows.forEach((row) => { if (row.variant_id) variantIds.add(Number(row.variant_id)); });
+    const stockMatches = await liveStocks(stockRows);
 
     if (!variantIds.size) {
-      return new Response(
-        JSON.stringify({
-          found: false,
-          function_version: FUNCTION_VERSION,
-          query,
-          office_ids: officeIds,
-          message: 'No se encontró variant_id en bsale_stock_current ni bsale_sku_aliases.',
-          stock_matches: stockMatches,
-          alias_matches: aliasRows.length,
-          index_matches: stockIndexRows.length,
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({
+        found: false, function_version: FUNCTION_VERSION, query, office_ids: officeIds, end_date: endDate,
+        data_policy: 'closed_through_yesterday_utc', message: 'No se encontró variant_id en bsale_stock_current ni bsale_sku_aliases.',
+        stock_matches: stockMatches, alias_matches: aliasRows.length, index_matches: stockRows.length,
+      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const receptionResult = await findLastReceptionProgressive({
-      officeIds,
-      variantIds,
-      lookbackDays,
-      endDate,
-      maxDetails: maxReceptionDetails,
-      maxPagesPerOffice: maxReceptionPagesPerOffice,
-    });
+    const receptionResult = await findLastReception(officeIds, variantIds, startDate, endDate, maxReceptionDetails, maxReceptionPages);
+    receptionResult.stats.lookup_windows = [Math.max(1, Math.trunc(lookbackDays || 365))];
 
     if (!receptionResult.last_reception) {
-      const summary = buildSummary({ stockMatches, lastReception: null, documentMovements: [], consumptionMovements: [] });
-      return new Response(
-        JSON.stringify({
-          found: true,
-          sell_through_found: false,
-          function_version: FUNCTION_VERSION,
-          query,
-          office_ids: officeIds,
-          variant_ids: sortedVariantIds(variantIds),
-          start_date: receptionResult.start_date_used,
-          end_date: endDate,
-          stock_matches: stockMatches,
-          last_reception: null,
-          summary,
-          movements: [],
-          scan_stats: { receptions: receptionResult.stats, documents: null, consumptions: null },
-          diagnostic: {
-            phase: 'reception_scan',
-            lookup_windows_used: receptionResult.stats.lookup_windows,
-            reception_order_strategy: receptionResult.stats.assumed_reception_order,
-            document_scan_start: null,
-            consumption_scan_start: null,
-          },
-          message: 'SKU encontrado, pero no se encontró recepción dentro del rango consultado.',
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({
+        found: true, sell_through_found: false, function_version: FUNCTION_VERSION, query, office_ids: officeIds,
+        variant_ids: sortedIds(variantIds), start_date: startDate, end_date: endDate, data_policy: 'closed_through_yesterday_utc',
+        stock_matches: stockMatches, last_reception: null, summary: summary(stockMatches, null, [], []), movements: [],
+        scan_stats: { receptions: receptionResult.stats, documents: null, consumptions: null },
+        diagnostic: { phase: 'reception_scan', lookup_windows_used: receptionResult.stats.lookup_windows, reception_order_strategy: receptionResult.stats.assumed_reception_order, document_scan_start: null, consumption_scan_start: null, data_policy: 'closed_through_yesterday_utc' },
+        message: 'SKU encontrado, pero no se encontró recepción dentro del rango consultado hasta ayer.',
+      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     const scanStartDate = receptionResult.last_reception.date;
-
-    const documentResult = await scanDocumentsSince({
-      officeIds,
-      variantIds,
-      startDate: scanStartDate,
-      endDate,
-      maxPagesPerDayType: maxDocumentPagesPerDayType,
-      maxDetails: maxDocumentDetails,
-    });
-
-    const consumptionResult = await scanConsumptionsSince({
-      officeIds,
-      variantIds,
-      startDate: scanStartDate,
-      endDate,
-      maxPagesPerOffice: maxConsumptionPagesPerOffice,
-      maxDetails: maxConsumptionDetails,
-    });
-
-    const movements = [receptionResult.last_reception.movement, ...documentResult.movements, ...consumptionResult.movements].sort((a, b) => {
+    const docResult = await scanDocuments(officeIds, variantIds, scanStartDate, endDate);
+    const consumptionResult = await scanConsumptions(officeIds, variantIds, scanStartDate, endDate, maxConsumptionPages, maxConsumptionDetails);
+    const movements = [receptionResult.last_reception.movement, ...docResult.movements, ...consumptionResult.movements].sort((a, b) => {
       const dateCompare = String(b.movement_date).localeCompare(String(a.movement_date));
-      if (dateCompare !== 0) return dateCompare;
-      return String(b.source).localeCompare(String(a.source));
+      return dateCompare || String(b.source).localeCompare(String(a.source));
     });
 
-    const summary = buildSummary({
-      stockMatches,
-      lastReception: receptionResult.last_reception,
-      documentMovements: documentResult.movements,
-      consumptionMovements: consumptionResult.movements,
-    });
-
-    return new Response(
-      JSON.stringify({
-        found: true,
-        sell_through_found: true,
-        function_version: FUNCTION_VERSION,
-        query,
-        office_ids: officeIds,
-        variant_ids: sortedVariantIds(variantIds),
-        start_date: receptionResult.start_date_used,
-        scan_start_date: scanStartDate,
-        end_date: endDate,
-        stock_matches: stockMatches,
-        last_reception: receptionResult.last_reception.movement,
-        summary,
-        movements,
-        scan_stats: { receptions: receptionResult.stats, documents: documentResult.stats, consumptions: consumptionResult.stats },
-        diagnostic: {
-          phase: 'complete',
-          lookup_windows_used: receptionResult.stats.lookup_windows,
-          reception_order_strategy: receptionResult.stats.assumed_reception_order,
-          last_reception_date: receptionResult.last_reception.date,
-          document_scan_start: scanStartDate,
-          document_scan_source: documentResult.stats.source,
-          consumption_scan_start: scanStartDate,
-        },
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    );
-  } catch (error) {
-    return new Response(
-      JSON.stringify({ function_version: FUNCTION_VERSION, error: error instanceof Error ? error.message : String(error) }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-    );
+    return new Response(JSON.stringify({
+      found: true, sell_through_found: true, function_version: FUNCTION_VERSION, query, office_ids: officeIds,
+      variant_ids: sortedIds(variantIds), start_date: startDate, scan_start_date: scanStartDate, end_date: endDate,
+      data_policy: 'closed_through_yesterday_utc', stock_matches: stockMatches, last_reception: receptionResult.last_reception.movement,
+      summary: summary(stockMatches, receptionResult.last_reception, docResult.movements, consumptionResult.movements), movements,
+      scan_stats: { receptions: receptionResult.stats, documents: docResult.stats, consumptions: consumptionResult.stats },
+      diagnostic: {
+        phase: 'complete', lookup_windows_used: receptionResult.stats.lookup_windows, reception_order_strategy: receptionResult.stats.assumed_reception_order,
+        last_reception_date: receptionResult.last_reception.date, document_scan_start: scanStartDate, document_scan_source: docResult.stats.source,
+        consumption_scan_start: scanStartDate, data_policy: 'closed_through_yesterday_utc',
+      },
+    }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(JSON.stringify({ function_version: FUNCTION_VERSION, error: err instanceof Error ? err.message : String(err) }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 });
