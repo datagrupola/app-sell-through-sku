@@ -6,23 +6,27 @@ on:
       office_ids:
         description: "Office IDs separados por coma"
         required: true
-        default: "2"
+        default: "2,3,4"
       document_type_ids:
-        description: "Tipos de documento separados por coma. LAS AMERICAS: ventas 40, devoluciones 41"
+        description: "Tipos de documento separados por coma"
         required: true
-        default: "40,41"
+        default: "10,39,40,41,44"
       start_date:
-        description: "Fecha inicial YYYY-MM-DD"
-        required: true
-        default: "2025-09-13"
+        description: "Fecha inicial YYYY-MM-DD. Vacío = ayer UTC"
+        required: false
+        default: ""
       end_date:
-        description: "Fecha final YYYY-MM-DD. Vacío = hoy UTC"
+        description: "Fecha final YYYY-MM-DD. Vacío = ayer UTC"
         required: false
         default: ""
       max_document_pages_per_type:
-        description: "0 = todas las páginas. Prueba inicial: 20"
+        description: "0 = todas las páginas"
         required: true
-        default: "20"
+        default: "0"
+  schedule:
+    # Mantiene el índice documental actualizado para que la app reporte hasta ayer.
+    # 09:30 UTC = madrugada en México; evita depender de consultas live pesadas en la Edge Function.
+    - cron: "30 9 * * *"
 
 permissions:
   contents: read
@@ -35,11 +39,11 @@ jobs:
       BSALE_ACCESS_TOKEN: ${{ secrets.BSALE_ACCESS_TOKEN }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      OFFICE_IDS: ${{ inputs.office_ids }}
-      DOCUMENT_TYPE_IDS: ${{ inputs.document_type_ids }}
-      START_DATE: ${{ inputs.start_date }}
-      END_DATE: ${{ inputs.end_date }}
-      MAX_DOCUMENT_PAGES_PER_TYPE: ${{ inputs.max_document_pages_per_type }}
+      OFFICE_IDS: ${{ inputs.office_ids || '2,3,4' }}
+      DOCUMENT_TYPE_IDS: ${{ inputs.document_type_ids || '10,39,40,41,44' }}
+      START_DATE_INPUT: ${{ inputs.start_date || '' }}
+      END_DATE_INPUT: ${{ inputs.end_date || '' }}
+      MAX_DOCUMENT_PAGES_PER_TYPE: ${{ inputs.max_document_pages_per_type || '0' }}
 
     steps:
       - name: Checkout repo
@@ -52,6 +56,14 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Resolve yesterday date range
+        run: |
+          YESTERDAY="$(date -u -d 'yesterday' +%F)"
+          echo "START_DATE=${START_DATE_INPUT:-$YESTERDAY}" >> "$GITHUB_ENV"
+          echo "END_DATE=${END_DATE_INPUT:-$YESTERDAY}" >> "$GITHUB_ENV"
+          echo "Resolved START_DATE=${START_DATE_INPUT:-$YESTERDAY}"
+          echo "Resolved END_DATE=${END_DATE_INPUT:-$YESTERDAY}"
 
       - name: Run Bsale documents sync
         run: python src/sync_documents.py
