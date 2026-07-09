@@ -1,5 +1,5 @@
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
-const FUNCTION_VERSION = 'v2.4-period-mode';
+const FUNCTION_VERSION = 'v2.5-live-stock-by-variant-office';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -126,7 +126,7 @@ async function liveStocks(rows: Row[]) {
       const variant = live.variant ?? {};
       const officeId = n(office.id ?? row.office_id);
       out.push({
-        source: 'BSALE_LIVE', live_ok: true,
+        source: 'BSALE_LIVE_STOCK_ID', live_ok: true,
         office_id: officeId, office_name: office.name ?? officeName(officeId),
         variant_id: n(variant.id ?? row.variant_id), stock_id: n(live.id ?? row.stock_id),
         sku: variant.code ?? row.sku_norm, barcode: variant.barCode ?? row.barcode_norm,
@@ -146,6 +146,57 @@ async function liveStocks(rows: Row[]) {
     }
   }
   return out;
+}
+
+async function liveStocksByVariantOffice(officeIds: number[], variantIds: Set<number>, query: string, indexRows: Row[]) {
+  const out: Row[] = [];
+  const indexByOfficeVariant = new Map<string, Row>();
+  for (const row of indexRows) {
+    indexByOfficeVariant.set(`${n(row.office_id)}:${n(row.variant_id)}`, row);
+  }
+
+  for (const officeId of officeIds) {
+    for (const variantId of sortedIds(variantIds)) {
+      const indexRow = indexByOfficeVariant.get(`${officeId}:${variantId}`) ?? {};
+      try {
+        const page = await bsale('stocks.json', { officeid: officeId, variantid: variantId, limit: 10, offset: 0 });
+        const items = (page.items ?? []) as Row[];
+        for (const live of items) {
+          const office = (live.office ?? {}) as Row;
+          const variant = (live.variant ?? {}) as Row;
+          const liveOfficeId = n(office.id ?? officeId);
+          const liveVariantId = n(variant.id ?? variantId);
+          if (liveOfficeId !== officeId || liveVariantId !== variantId) continue;
+          out.push({
+            source: 'BSALE_LIVE_VARIANT_OFFICE', live_ok: true,
+            office_id: liveOfficeId, office_name: String(office.name ?? officeName(liveOfficeId)),
+            variant_id: liveVariantId, stock_id: n(live.id),
+            sku: variant.code ?? indexRow.sku_norm ?? sku(query),
+            barcode: variant.barCode ?? indexRow.barcode_norm ?? barcode(query),
+            quantity: n(live.quantity), quantity_reserved: n(live.quantityReserved), quantity_available: n(live.quantityAvailable),
+            index_synced_at: indexRow.synced_at ?? null,
+          });
+        }
+      } catch (err) {
+        out.push({
+          source: 'BSALE_LIVE_VARIANT_OFFICE_ERROR', live_ok: false,
+          live_error: err instanceof Error ? err.message : String(err),
+          office_id: officeId, office_name: officeName(officeId), variant_id: variantId, stock_id: null,
+          sku: indexRow.sku_norm ?? sku(query), barcode: indexRow.barcode_norm ?? barcode(query),
+          quantity: 0, quantity_reserved: 0, quantity_available: 0,
+          index_synced_at: indexRow.synced_at ?? null,
+        });
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  return out.filter((row) => {
+    const key = `${row.office_id}:${row.variant_id}:${row.stock_id ?? 'no-stock'}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function fallbackStockMatches(officeIds: number[], variantIds: Set<number>, query: string) {
@@ -443,9 +494,10 @@ Deno.serve(async (req) => {
     const variantIds = new Set<number>();
     stockRows.forEach((row) => { if (row.variant_id) variantIds.add(Number(row.variant_id)); });
     aliasRows.forEach((row) => { if (row.variant_id) variantIds.add(Number(row.variant_id)); });
-    let stockMatches = await liveStocks(stockRows);
+    let stockMatches: Row[] = [];
 
     if (!variantIds.size) {
+      stockMatches = await liveStocks(stockRows);
       return new Response(JSON.stringify({
         found: false, function_version: FUNCTION_VERSION, analysis_mode: mode, query, office_ids: officeIds, start_date: startDate, end_date: endDate,
         data_policy: 'closed_through_yesterday_utc', message: 'No se encontró variant_id en bsale_stock_current ni bsale_sku_aliases.',
@@ -453,6 +505,8 @@ Deno.serve(async (req) => {
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
+    stockMatches = await liveStocksByVariantOffice(officeIds, variantIds, query, stockRows);
+    if (!stockMatches.length) stockMatches = await liveStocks(stockRows);
     if (!stockMatches.length) stockMatches = fallbackStockMatches(officeIds, variantIds, query);
 
     if (mode === 'period') {
@@ -474,7 +528,7 @@ Deno.serve(async (req) => {
         diagnostic: {
           phase: 'complete', analysis_mode: mode, reception_order_strategy: receptionScan.stats.assumed_reception_order,
           document_scan_start: startDate, document_scan_source: docResult.stats.source,
-          consumption_scan_start: startDate, data_policy: 'closed_through_yesterday_utc',
+          stock_scan_source: stockMatches.map((x) => x.source), consumption_scan_start: startDate, data_policy: 'closed_through_yesterday_utc',
         },
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
@@ -489,7 +543,7 @@ Deno.serve(async (req) => {
         variant_ids: sortedIds(variantIds), start_date: startDate, end_date: endDate, data_policy: 'closed_through_yesterday_utc',
         stock_matches: stockMatches, last_reception: null, summary: summary(stockMatches, 0, [], []), movements: [],
         scan_stats: { receptions: receptionScan.stats, documents: null, consumptions: null },
-        diagnostic: { phase: 'reception_scan', analysis_mode: mode, lookup_windows_used: receptionScan.stats.lookup_windows, reception_order_strategy: receptionScan.stats.assumed_reception_order, document_scan_start: null, consumption_scan_start: null, data_policy: 'closed_through_yesterday_utc' },
+        diagnostic: { phase: 'reception_scan', analysis_mode: mode, lookup_windows_used: receptionScan.stats.lookup_windows, reception_order_strategy: receptionScan.stats.assumed_reception_order, document_scan_start: null, stock_scan_source: stockMatches.map((x) => x.source), consumption_scan_start: null, data_policy: 'closed_through_yesterday_utc' },
         message: 'SKU encontrado, pero no se encontró recepción dentro del rango consultado hasta ayer.',
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
@@ -509,7 +563,7 @@ Deno.serve(async (req) => {
       diagnostic: {
         phase: 'complete', analysis_mode: mode, lookup_windows_used: receptionScan.stats.lookup_windows, reception_order_strategy: receptionScan.stats.assumed_reception_order,
         last_reception_date: lastReception.date, document_scan_start: scanStartDate, document_scan_source: docResult.stats.source,
-        consumption_scan_start: scanStartDate, data_policy: 'closed_through_yesterday_utc',
+        stock_scan_source: stockMatches.map((x) => x.source), consumption_scan_start: scanStartDate, data_policy: 'closed_through_yesterday_utc',
       },
     }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (err) {
