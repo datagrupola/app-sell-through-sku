@@ -7,52 +7,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sell-through live por SKU</title>
   </head>
-
   <body>
     <main class="page">
       <section class="hero">
         <p class="eyebrow">Chino Regalado · Bsale live · v2</p>
         <h1>Sell-through live por SKU</h1>
-        <p class="subtitle">
-          Calcula última recepción, ventas, devoluciones, consumos/ajustes y stock actual directamente desde Bsale.
-        </p>
+        <p class="subtitle">Analiza movimientos por última recepción o por periodo explícito. La operación documental cierra hasta ayer.</p>
       </section>
 
       <section class="panel">
         <form id="search-form" class="search-form">
-          <label>
-            SKU o código de barras
-            <input id="search-input" type="text" placeholder="Ej. ROPACR" autocomplete="off" required />
-          </label>
-
-          <label>
-            Sucursal
-            <select id="office-select">
-              <option value="2">CHINO LAS AMERICAS</option>
-              <option value="3">CHINO LA HUERTA</option>
-              <option value="4">CHINO LEON CENTRO</option>
-            </select>
-          </label>
-
-          <label>
-            Buscar recepción en
-            <select id="lookback-select">
-              <option value="10">Últimos 10 días</option>
-              <option value="30">Últimos 30 días</option>
-              <option value="90">Últimos 90 días</option>
-              <option value="180">Últimos 180 días</option>
-              <option value="365" selected>Últimos 365 días</option>
-            </select>
-          </label>
-
+          <label>SKU o código de barras<input id="search-input" type="text" placeholder="Ej. ROPACR" autocomplete="off" required /></label>
+          <label>Sucursal<select id="office-select"><option value="2">CHINO LAS AMERICAS</option><option value="3">CHINO LA HUERTA</option><option value="4">CHINO LEON CENTRO</option></select></label>
+          <label>Buscar recepción en<select id="mode-select"><option value="last_reception" selected>Última recepción</option><option value="period">Periodo</option></select></label>
+          <label class="period-field" hidden>Fecha inicial<input id="period-start" type="date" /></label>
+          <label class="period-field" hidden>Fecha final<input id="period-end" type="date" /></label>
           <button id="search-button" type="submit">Calcular</button>
         </form>
 
-        <div class="actions-row">
-          <div id="status" class="status"></div>
-          <button id="pdf-button" class="secondary-button" type="button" hidden>Descargar PDF</button>
-        </div>
-
+        <div class="actions-row"><div id="status" class="status"></div><button id="pdf-button" class="secondary-button" type="button" hidden>Descargar PDF</button></div>
         <div id="result" class="result"></div>
       </section>
     </main>
@@ -64,102 +37,63 @@
       const form = document.querySelector('#search-form');
       const input = document.querySelector('#search-input');
       const officeSelect = document.querySelector('#office-select');
-      const lookbackSelect = document.querySelector('#lookback-select');
+      const modeSelect = document.querySelector('#mode-select');
+      const periodFields = Array.from(document.querySelectorAll('.period-field'));
+      const periodStart = document.querySelector('#period-start');
+      const periodEnd = document.querySelector('#period-end');
       const button = document.querySelector('#search-button');
       const pdfButton = document.querySelector('#pdf-button');
       const status = document.querySelector('#status');
       const result = document.querySelector('#result');
-
       let lastCalculation = null;
 
-      const numeric = (value) => {
-        const parsed = Number(value ?? 0);
+      const num = (v) => {
+        const parsed = Number(v ?? 0);
         return Number.isFinite(parsed) ? parsed : 0;
       };
+      const fmt = (v) => num(v).toLocaleString('es-MX', { maximumFractionDigits: 2 });
+      const money = (v) => num(v).toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
+      const pct = (v) => v === null || v === undefined || v === '' ? '—' : `${fmt(v)}%`;
+      const esc = (v) => String(v ?? '—').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+      const plain = (v) => String(v ?? '—');
+      const ymd = () => new Date().toISOString().slice(0, 10);
+      const yesterday = () => { const d = new Date(); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
+      const daysAgo = (days) => { const d = new Date(); d.setUTCDate(d.getUTCDate() - days); return d.toISOString().slice(0, 10); };
+      const setStatus = (message) => { status.textContent = message; };
+      const showPdf = (value) => { pdfButton.hidden = !value; };
+      const fileSafe = (v) => String(v || 'sku').trim().replace(/[^a-z0-9-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
 
-      const number = (value) => Number(value || 0).toLocaleString('es-MX', { maximumFractionDigits: 2 });
-
-      const money = (value) => Number(value || 0).toLocaleString('es-MX', {
-        style: 'currency',
-        currency: 'MXN',
-      });
-
-      const pct = (value) => {
-        if (value === null || value === undefined || value === '') return '—';
-        return `${number(value)}%`;
-      };
-
-      const text = (value) => {
-        if (value === null || value === undefined || value === '') return '—';
-        return String(value)
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;')
-          .replaceAll('"', '&quot;')
-          .replaceAll("'", '&#039;');
-      };
-
-      const plain = (value) => {
-        if (value === null || value === undefined || value === '') return '—';
-        return String(value);
-      };
-
-      const clamp = (value, min, max) => Math.max(min, Math.min(max, Number(value || 0)));
-
-      const setStatus = (message) => {
-        status.textContent = message;
-      };
-
-      const setPdfAvailable = (available) => {
-        pdfButton.hidden = !available;
-      };
-
-      const fileSafe = (value) => String(value || 'sku')
-        .trim()
-        .replace(/[^a-z0-9-_]+/gi, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-|-$/g, '')
-        .toLowerCase();
-
-      const sellThroughLevel = (value) => {
-        const numericValue = Number(value || 0);
-        if (numericValue >= 80) return 'Alto';
-        if (numericValue >= 50) return 'Medio';
-        if (numericValue >= 20) return 'Bajo';
-        return 'Inicial';
-      };
-
-      const buildDailyTimeline = (movements = []) => {
-        const byDate = new Map();
-
-        for (const item of movements) {
-          const group = item?.movement_group;
-          const date = item?.movement_date || 'Sin fecha';
-          const current = byDate.get(date) || {
-            date,
-            sold: 0,
-            returned: 0,
-            consumed: 0,
-            stockOut: 0,
-            netSold: 0,
-            movements: 0,
-          };
-
-          const qty = numeric(item.quantity);
-          if (group === 'VENTA') current.sold += qty;
-          if (group === 'DEVOLUCION') current.returned += qty;
-          if (group === 'CONSUMO_AJUSTE') current.consumed += qty;
-
-          current.netSold = current.sold - current.returned;
-          current.stockOut = current.netSold + current.consumed;
-          current.movements += 1;
-          byDate.set(date, current);
+      const updateModeUi = () => {
+        const isPeriod = modeSelect.value === 'period';
+        periodFields.forEach((field) => { field.hidden = !isPeriod; });
+        form.classList.toggle('period-mode', isPeriod);
+        if (isPeriod) {
+          if (!periodStart.value) periodStart.value = daysAgo(30);
+          if (!periodEnd.value) periodEnd.value = yesterday();
+          periodEnd.max = yesterday();
         }
+      };
+      modeSelect.addEventListener('change', updateModeUi);
+      updateModeUi();
 
-        return Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+      const groupByDay = (movements = []) => {
+        const map = new Map();
+        for (const movement of movements) {
+          const date = movement.movement_date || 'Sin fecha';
+          const row = map.get(date) || { date, received: 0, sold: 0, returned: 0, consumed: 0, stockOut: 0, movements: 0 };
+          const qty = num(movement.quantity);
+          if (movement.movement_group === 'ENTRADA') row.received += qty;
+          if (movement.movement_group === 'VENTA') row.sold += qty;
+          if (movement.movement_group === 'DEVOLUCION') row.returned += qty;
+          if (movement.movement_group === 'CONSUMO_AJUSTE') row.consumed += qty;
+          row.stockOut = row.sold - row.returned + row.consumed;
+          row.movements += 1;
+          map.set(date, row);
+        }
+        return Array.from(map.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
       };
 
-      const movementTypeLabel = (movement) => {
+      const movementLabel = (movement) => {
         if (movement.movement_group === 'ENTRADA') return 'Recepción';
         if (movement.movement_group === 'VENTA') return 'Venta';
         if (movement.movement_group === 'DEVOLUCION') return 'Devolución';
@@ -174,480 +108,106 @@
         return 'sale';
       };
 
-      const renderNotFound = (data) => {
-        lastCalculation = data;
-        setPdfAvailable(false);
-        result.innerHTML = `
-          <section class="section-card error-card">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Resultado</p>
-                <h2>SKU no encontrado</h2>
-              </div>
-              <span class="badge danger">Sin coincidencia</span>
-            </div>
-            <p class="muted">No se encontró variant_id para <strong>${text(data?.query || input.value)}</strong>.</p>
-          </section>
-        `;
+      const renderError = (message) => {
+        showPdf(false);
+        result.innerHTML = `<section class="section-card error-card"><div class="section-header"><div><p class="section-kicker">Error</p><h2>No se pudo calcular</h2></div><span class="badge danger">Error</span></div><p class="muted">${esc(message?.message || message)}</p></section>`;
       };
 
       const renderNoReception = (data) => {
-        lastCalculation = data;
-        const stock = data.stock_matches?.[0];
+        const stock = data.stock_matches?.[0] || {};
         const summary = data.summary || {};
-        setPdfAvailable(false);
-
-        result.innerHTML = `
-          <section class="section-card">
-            <div class="section-header">
-              <div>
-                <p class="section-kicker">Bsale live</p>
-                <h2>SKU encontrado, sin recepción en rango</h2>
-              </div>
-              <span class="badge warning">Sin última recepción</span>
-            </div>
-            <div class="summary-grid compact">
-              <article class="card primary"><span>SKU</span><strong>${text(stock?.sku || data.query)}</strong><small>${text(stock?.office_name)}</small></article>
-              <article class="card"><span>Stock actual</span><strong>${number(summary.stock_actual)}</strong><small>Disponible: ${number(summary.stock_disponible)}</small></article>
-              <article class="card"><span>Variant ID</span><strong>${text(data.variant_ids?.join(', '))}</strong><small>Rango: ${text(data.start_date)} a ${text(data.end_date)}</small></article>
-            </div>
-            <p class="muted block-note">El SKU existe, pero no se encontró recepción dentro del rango consultado.</p>
-          </section>
-        `;
-      };
-
-      const renderError = (error) => {
-        setPdfAvailable(false);
-        result.innerHTML = `
-          <section class="section-card error-card">
-            <div class="section-header">
-              <div><p class="section-kicker">Error</p><h2>No se pudo calcular</h2></div>
-              <span class="badge danger">Error</span>
-            </div>
-            <p class="muted">${text(error?.message || error)}</p>
-          </section>
-        `;
+        showPdf(false);
+        result.innerHTML = `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Resultado</p><h2>SKU encontrado, sin recepción</h2></div><span class="badge warning">Sin entrada</span></div><div class="summary-grid compact"><article class="card primary"><span>SKU</span><strong>${esc(stock.sku || data.query)}</strong><small>${esc(stock.office_name)}</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Rango</span><strong>${esc(data.start_date)} a ${esc(data.end_date)}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></section>`;
       };
 
       const renderData = (data) => {
         lastCalculation = data;
-
-        if (!data?.found) return renderNotFound(data);
+        if (!data?.found) return renderError(data?.message || 'SKU no encontrado.');
         if (!data?.sell_through_found) return renderNoReception(data);
 
+        showPdf(true);
+        const isPeriod = data.analysis_mode === 'period';
         const stock = data.stock_matches?.[0] || {};
         const summary = data.summary || {};
         const reception = data.last_reception || {};
-        const scanStats = data.scan_stats || {};
+        const stats = data.scan_stats || {};
         const movements = data.movements || [];
-        const timeline = buildDailyTimeline(movements);
-        const sellThroughValue = numeric(summary.sell_through_pct);
-        const sellThroughClamped = clamp(sellThroughValue, 0, 100);
-        const sellThroughStatus = sellThroughLevel(sellThroughValue);
-        const showWarning = summary.advertencia_salidas_superan_ultima_recepcion === true;
-        const maxOut = Math.max(1, ...timeline.map((row) => numeric(row.stockOut)));
+        const timeline = groupByDay(movements);
+        const modeTitle = isPeriod ? 'Periodo explícito' : 'Última recepción';
+        const receivedNote = isPeriod ? `${fmt(data.period_receptions?.length || 0)} recepciones dentro del periodo` : `Recepción ${esc(reception.reception_id)} · ${esc(reception.movement_date)}`;
+        const warning = summary.advertencia_salidas_superan_ultima_recepcion ? `<section class="section-card warning-card"><div class="section-header tight"><div><p class="section-kicker">Advertencia</p><h2>Las salidas superan las entradas del rango</h2></div><span class="badge warning">Revisar</span></div><p class="muted block-note">${esc(summary.nota_trazabilidad)}</p></section>` : '';
 
-        setPdfAvailable(true);
+        const timelineHtml = timeline.map((row) => `<article class="timeline-day"><div class="timeline-date"><strong>${esc(row.date)}</strong><small>${fmt(row.movements)} movimientos</small></div><div class="pill-row"><span><strong>${fmt(row.received)}</strong> recibidas</span><span><strong>${fmt(row.sold)}</strong> vendidas</span><span><strong>${fmt(row.returned)}</strong> devueltas</span><span><strong>${fmt(row.consumed)}</strong> ajustes</span><span><strong>${fmt(row.stockOut)}</strong> salidas stock</span></div></article>`).join('');
+        const movementsHtml = movements.slice(0, 120).map((movement) => `<article class="movement-row ${movementClass(movement)}"><div><strong>${esc(movementLabel(movement))}</strong><small>${esc(movement.movement_date)} · ${esc(movement.note)}</small></div><div class="movement-qty"><strong>${fmt(movement.quantity_signed ?? movement.quantity)}</strong><small>piezas</small></div></article>`).join('');
 
-        const warningHtml = showWarning
-          ? `<section class="section-card warning-card">
-              <div class="section-header tight">
-                <div><p class="section-kicker">Advertencia de trazabilidad</p><h2>Las salidas superan la última recepción</h2></div>
-                <span class="badge warning">Revisar lote</span>
-              </div>
-              <p class="muted block-note">${text(summary.nota_trazabilidad)}</p>
-            </section>`
-          : '';
+        const context = isPeriod
+          ? `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Periodo analizado</p><h2>${esc(data.start_date)} a ${esc(data.end_date)}</h2></div><span class="badge neutral">Periodo</span></div><dl class="detail-grid"><div><dt>Fecha inicial</dt><dd>${esc(data.start_date)}</dd></div><div><dt>Fecha final</dt><dd>${esc(data.end_date)}</dd></div><div><dt>Recepciones</dt><dd>${fmt(data.period_receptions?.length || 0)}</dd></div><div><dt>Piezas recibidas</dt><dd>${fmt(summary.piezas_recibidas_periodo ?? summary.piezas_recibidas_ultima_recepcion)}</dd></div><div><dt>Vendidas netas</dt><dd>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</dd></div><div><dt>Ajustes stock</dt><dd>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</dd></div></dl></section>`
+          : `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Última recepción</p><h2>Recepción ${esc(reception.reception_id)}</h2></div><span class="badge neutral">${esc(reception.movement_type)}</span></div><dl class="detail-grid"><div><dt>Fecha</dt><dd>${esc(reception.movement_date)}</dd></div><div><dt>Piezas</dt><dd>${fmt(reception.quantity)}</dd></div><div><dt>Costo</dt><dd>${money(reception.cost)}</dd></div><div><dt>Stock al recibir</dt><dd>${fmt(reception.variant_stock)}</dd></div><div><dt>Documento</dt><dd>${esc(reception.document_number)}</dd></div><div><dt>Despacho interno</dt><dd>${esc(reception.internal_dispatch_id)}</dd></div><div class="wide"><dt>Nota</dt><dd>${esc(reception.note)}</dd></div></dl></section>`;
 
-        const timelineHtml = timeline.length
-          ? `<div class="timeline">
-              ${timeline.map((row) => {
-                const width = row.stockOut > 0 ? Math.max(4, (row.stockOut / maxOut) * 100) : 0;
-                return `
-                  <article class="timeline-day">
-                    <div class="timeline-date"><strong>${text(row.date)}</strong><small>${number(row.movements)} movimientos</small></div>
-                    <div class="timeline-main">
-                      <div class="bar-shell"><div class="bar" style="width:${width}%"></div></div>
-                      <div class="pill-row">
-                        <span><strong>${number(row.sold)}</strong> vendidas</span>
-                        <span><strong>${number(row.returned)}</strong> devueltas</span>
-                        <span><strong>${number(row.consumed)}</strong> ajuste/consumo</span>
-                        <span><strong>${number(row.stockOut)}</strong> salidas stock</span>
-                      </div>
-                    </div>
-                  </article>
-                `;
-              }).join('')}
-            </div>`
-          : `<p class="muted block-note">No hay movimientos posteriores a la última recepción.</p>`;
-
-        const movementsHtml = movements.slice(0, 80).map((movement) => `
-          <article class="movement-row ${movementClass(movement)}">
-            <div><strong>${text(movementTypeLabel(movement))}</strong><small>${text(movement.movement_date)} · ${text(movement.note)}</small></div>
-            <div class="movement-qty"><strong>${number(movement.quantity_signed ?? movement.quantity)}</strong><small>piezas</small></div>
-          </article>
-        `).join('');
-
-        result.innerHTML = `
-          ${warningHtml}
-          <section class="section-card">
-            <div class="section-header">
-              <div><p class="section-kicker">Resultado live</p><h2>${text(stock.sku || data.query)}</h2></div>
-              <span class="badge success">${text(data.function_version || 'v2')}</span>
-            </div>
-            <div class="result-layout">
-              <article class="sellthrough-panel">
-                <div class="gauge" style="--value:${sellThroughClamped};"><div class="gauge-inner"><strong>${pct(summary.sell_through_pct)}</strong><span>${text(sellThroughStatus)}</span></div></div>
-                <div><p class="metric-label">Sell-through por venta</p><p class="metric-help">${number(summary.piezas_netas_venta_desde_ultima_recepcion)} piezas netas vendidas de ${number(summary.piezas_recibidas_ultima_recepcion)} recibidas.</p></div>
-              </article>
-              <div class="summary-grid compact">
-                <article class="card"><span>Recibidas</span><strong>${number(summary.piezas_recibidas_ultima_recepcion)}</strong><small>Recepción ${text(reception.reception_id)} · ${text(reception.movement_date)}</small></article>
-                <article class="card"><span>Vendidas netas</span><strong>${number(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong><small>Vendidas: ${number(summary.piezas_vendidas_desde_ultima_recepcion)} · Devueltas: ${number(summary.piezas_devueltas_desde_ultima_recepcion)}</small></article>
-                <article class="card ${showWarning ? 'warning-soft' : ''}"><span>Consumo / ajuste</span><strong>${number(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</strong><small>Salidas no venta que afectaron stock</small></article>
-                <article class="card ${showWarning ? 'warning-soft' : ''}"><span>Salidas stock</span><strong>${number(summary.piezas_salidas_stock_desde_ultima_recepcion)}</strong><small>${pct(summary.salidas_vs_recepcion_pct)} de la última recepción</small></article>
-                <article class="card"><span>Stock actual</span><strong>${number(summary.stock_actual)}</strong><small>Disponible: ${number(summary.stock_disponible)}</small></article>
-                <article class="card"><span>Sucursal</span><strong>${text(stock.office_name)}</strong><small>Variant ID ${text(data.variant_ids?.join(', '))}</small></article>
-              </div>
-            </div>
-          </section>
-
-          <section class="section-card">
-            <div class="section-header"><div><p class="section-kicker">Última recepción</p><h2>Recepción ${text(reception.reception_id)}</h2></div><span class="badge neutral">${text(reception.movement_type)}</span></div>
-            <dl class="detail-grid">
-              <div><dt>Fecha</dt><dd>${text(reception.movement_date)}</dd></div>
-              <div><dt>Piezas</dt><dd>${number(reception.quantity)}</dd></div>
-              <div><dt>Costo</dt><dd>${money(reception.cost)}</dd></div>
-              <div><dt>Stock al recibir</dt><dd>${number(reception.variant_stock)}</dd></div>
-              <div><dt>Documento</dt><dd>${text(reception.document_number)}</dd></div>
-              <div><dt>Despacho interno</dt><dd>${text(reception.internal_dispatch_id)}</dd></div>
-              <div class="wide"><dt>Nota</dt><dd>${text(reception.note)}</dd></div>
-            </dl>
-          </section>
-
-          <section class="section-card">
-            <div class="section-header"><div><p class="section-kicker">Movimientos por día</p><h2>Ventas, devoluciones y ajustes desde la recepción</h2></div><span class="badge neutral">${number(timeline.length)} días</span></div>
-            ${timelineHtml}
-          </section>
-
-          <section class="section-card muted-card">
-            <div class="section-header"><div><p class="section-kicker">Cobertura revisada</p><h2>Qué leyó la función en Bsale</h2></div><span class="badge neutral">Diagnóstico</span></div>
-            <div class="coverage-grid">
-              <article class="coverage-item"><span>Rango recepción</span><strong>${text(data.start_date)} a ${text(data.end_date)}</strong><p>Estrategia: ${text(data.diagnostic?.reception_order_strategy)}</p></article>
-              <article class="coverage-item"><span>Recepciones revisadas</span><strong>${number(scanStats.receptions?.receptions_seen)}</strong><p>Coincidencias: ${number(scanStats.receptions?.matches)}</p></article>
-              <article class="coverage-item"><span>Documentos revisados</span><strong>${number(scanStats.documents?.documents_seen)}</strong><p>Líneas: ${number(scanStats.documents?.details_seen)} · matches: ${number(scanStats.documents?.matches)}</p></article>
-              <article class="coverage-item"><span>Consumos revisados</span><strong>${number(scanStats.consumptions?.consumptions_seen_in_date_range)}</strong><p>Líneas: ${number(scanStats.consumptions?.details_seen)} · matches: ${number(scanStats.consumptions?.matches)}</p></article>
-              <article class="coverage-item"><span>Scan desde</span><strong>${text(data.scan_start_date)}</strong><p>Desde la fecha de la última recepción encontrada.</p></article>
-              <article class="coverage-item"><span>Errores API</span><strong>${number((scanStats.receptions?.detail_errors || []).length + (scanStats.documents?.detail_errors || []).length + (scanStats.consumptions?.detail_errors || []).length)}</strong><p>Errores de detalle acumulados en Bsale.</p></article>
-            </div>
-          </section>
-
-          <section class="section-card">
-            <div class="section-header"><div><p class="section-kicker">Detalle</p><h2>Movimientos detectados</h2></div><span class="badge neutral">${number(movements.length)} movimientos</span></div>
-            <div class="movement-list">${movementsHtml || '<p class="muted">Sin movimientos.</p>'}</div>
-          </section>
-        `;
+        result.innerHTML = `${warning}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Resultado live · ${esc(modeTitle)}</p><h2>${esc(stock.sku || data.query)}</h2></div><span class="badge success">${esc(data.function_version)}</span></div><div class="result-layout"><article class="sellthrough-panel"><div class="gauge" style="--value:${Math.max(0, Math.min(100, num(summary.sell_through_pct)))};"><div class="gauge-inner"><strong>${pct(summary.sell_through_pct)}</strong><span>venta</span></div></div><div><p class="metric-label">Sell-through por venta</p><p class="metric-help">${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} piezas netas vendidas de ${fmt(summary.piezas_recibidas_ultima_recepcion)} recibidas.</p></div></article><div class="summary-grid compact"><article class="card"><span>Recibidas</span><strong>${fmt(summary.piezas_recibidas_ultima_recepcion)}</strong><small>${receivedNote}</small></article><article class="card"><span>Vendidas netas</span><strong>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong><small>Vendidas: ${fmt(summary.piezas_vendidas_desde_ultima_recepcion)} · Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}</small></article><article class="card"><span>Consumo / ajuste</span><strong>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</strong><small>Salidas no venta que afectaron stock</small></article><article class="card"><span>Salidas stock</span><strong>${fmt(summary.piezas_salidas_stock_desde_ultima_recepcion)}</strong><small>${pct(summary.salidas_vs_recepcion_pct)} de entradas</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Sucursal</span><strong>${esc(stock.office_name)}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></div><p class="muted block-note">Movimientos calculados hasta ${esc(data.end_date)}. El stock actual es live de Bsale.</p></section>${context}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Movimientos por día</p><h2>Recepciones, ventas, devoluciones y ajustes</h2></div><span class="badge neutral">${fmt(timeline.length)} días</span></div><div class="timeline">${timelineHtml || '<p class="muted">Sin movimientos.</p>'}</div></section><section class="section-card muted-card"><div class="section-header"><div><p class="section-kicker">Cobertura revisada</p><h2>Qué leyó la función en Bsale</h2></div><span class="badge neutral">Diagnóstico</span></div><div class="coverage-grid"><article class="coverage-item"><span>Rango</span><strong>${esc(data.scan_start_date || data.start_date)} a ${esc(data.end_date)}</strong><p>Modo: ${esc(modeTitle)}</p></article><article class="coverage-item"><span>Recepciones revisadas</span><strong>${fmt(stats.receptions?.receptions_seen)}</strong><p>Coincidencias: ${fmt(stats.receptions?.matches)}</p></article><article class="coverage-item"><span>Documentos revisados</span><strong>${fmt(stats.documents?.documents_seen)}</strong><p>Líneas: ${fmt(stats.documents?.details_seen)} · matches: ${fmt(stats.documents?.matches)}</p></article><article class="coverage-item"><span>Consumos revisados</span><strong>${fmt(stats.consumptions?.consumptions_seen_in_date_range)}</strong><p>Líneas: ${fmt(stats.consumptions?.details_seen)} · matches: ${fmt(stats.consumptions?.matches)}</p></article><article class="coverage-item"><span>Política</span><strong>Hasta ayer</strong><p>${esc(data.data_policy)}</p></article><article class="coverage-item"><span>Errores API</span><strong>${fmt((stats.receptions?.detail_errors || []).length + (stats.documents?.detail_errors || []).length + (stats.consumptions?.detail_errors || []).length)}</strong><p>Errores acumulados.</p></article></div></section><section class="section-card"><div class="section-header"><div><p class="section-kicker">Detalle</p><h2>Movimientos detectados</h2></div><span class="badge neutral">${fmt(movements.length)} movimientos</span></div><div class="movement-list">${movementsHtml || '<p class="muted">Sin movimientos.</p>'}</div></section>`;
       };
 
       const downloadPdf = async () => {
         if (!lastCalculation) return;
-
-        pdfButton.disabled = true;
-        const originalText = pdfButton.textContent;
-        pdfButton.textContent = 'Generando PDF...';
-
-        try {
-          const data = lastCalculation;
-          const stock = data.stock_matches?.[0] || {};
-          const summary = data.summary || {};
-          const reception = data.last_reception || {};
-          const scanStats = data.scan_stats || {};
-          const timeline = buildDailyTimeline(data.movements || []);
-          const movements = data.movements || [];
-
-          const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-          const pageWidth = pdf.internal.pageSize.getWidth();
-          const pageHeight = pdf.internal.pageSize.getHeight();
-          const margin = 34;
-          const contentWidth = pageWidth - margin * 2;
-          const dark = '#172033';
-          const muted = '#64748b';
-          const border = '#dbe3ef';
-          const soft = '#f8fafc';
-          const blue = '#2563eb';
-          const green = '#166534';
-          const amber = '#92400e';
-          const amberBg = '#fffbeb';
-          const red = '#991b1b';
-          let y = margin;
-
-          const fmt = number;
-          const safe = plain;
-          const lineHeight = 12;
-
-          const addFooter = () => {
-            pdf.setFont('helvetica', 'normal');
-            pdf.setFontSize(7.5);
-            pdf.setTextColor(muted);
-            pdf.text(`Generado ${new Date().toLocaleString('es-MX')} · ${safe(data.function_version)} · ${safe(data.scan_start_date)} a ${safe(data.end_date)}`, margin, pageHeight - 18);
-            pdf.text(`Página ${pdf.getNumberOfPages()}`, pageWidth - margin - 36, pageHeight - 18);
-          };
-
-          const newPage = () => {
-            addFooter();
-            pdf.addPage();
-            y = margin;
-          };
-
-          const ensureSpace = (height) => {
-            if (y + height > pageHeight - 34) newPage();
-          };
-
-          const wrappedText = (value, x, yPos, maxWidth, size = 8.5, color = dark, font = 'normal') => {
-            pdf.setFont('helvetica', font);
-            pdf.setFontSize(size);
-            pdf.setTextColor(color);
-            const lines = pdf.splitTextToSize(safe(value), maxWidth);
-            pdf.text(lines, x, yPos);
-            return lines.length * (size + 3);
-          };
-
-          const title = (label, value) => {
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(7.5);
-            pdf.setTextColor(muted);
-            pdf.text(label.toUpperCase(), margin, y);
-            y += 16;
-            pdf.setFontSize(17);
-            pdf.setTextColor(dark);
-            pdf.text(value, margin, y);
-            y += 18;
-          };
-
-          const card = (x, yPos, w, h, label, value, note = '', mode = 'neutral') => {
-            const fill = mode === 'dark' ? dark : mode === 'warning' ? amberBg : soft;
-            const labelColor = mode === 'dark' ? '#cbd5e1' : muted;
-            const valueColor = mode === 'dark' ? '#ffffff' : mode === 'warning' ? amber : dark;
-            pdf.setDrawColor(mode === 'warning' ? '#f59e0b' : border);
-            pdf.setFillColor(fill);
-            pdf.roundedRect(x, yPos, w, h, 10, 10, 'FD');
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(7.2);
-            pdf.setTextColor(labelColor);
-            pdf.text(label.toUpperCase(), x + 11, yPos + 15);
-            pdf.setFontSize(18);
-            pdf.setTextColor(valueColor);
-            pdf.text(safe(value), x + 11, yPos + 39, { maxWidth: w - 22 });
-            if (note) {
-              pdf.setFont('helvetica', 'normal');
-              pdf.setFontSize(7.4);
-              pdf.setTextColor(labelColor);
-              pdf.text(pdf.splitTextToSize(safe(note), w - 22), x + 11, yPos + 56);
-            }
-          };
-
-          const drawHeader = () => {
-            pdf.setFillColor(dark);
-            pdf.roundedRect(margin, y, contentWidth, 72, 14, 14, 'F');
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(8);
-            pdf.setTextColor('#cbd5e1');
-            pdf.text('CHINO REGALADO · BSALE LIVE · SELL-THROUGH V2', margin + 18, y + 20);
-            pdf.setFontSize(25);
-            pdf.setTextColor('#ffffff');
-            pdf.text('Reporte sell-through por SKU', margin + 18, y + 48);
-            pdf.setFont('helvetica', 'normal');
-            pdf.setFontSize(8.5);
-            pdf.setTextColor('#cbd5e1');
-            pdf.text(`SKU ${safe(stock.sku || data.query)} · ${safe(stock.office_name)} · Variant ${safe(data.variant_ids?.join(', '))}`, pageWidth - margin - 330, y + 48, { maxWidth: 310 });
-            y += 92;
-          };
-
-          drawHeader();
-
-          const kpiH = 74;
-          const kpiGap = 10;
-          const kpiW = (contentWidth - kpiGap * 4) / 5;
-          card(margin, y, kpiW, kpiH, 'Sell-through venta', pct(summary.sell_through_pct), `${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} de ${fmt(summary.piezas_recibidas_ultima_recepcion)} pzas`, 'dark');
-          card(margin + (kpiW + kpiGap), y, kpiW, kpiH, 'Recibidas', fmt(summary.piezas_recibidas_ultima_recepcion), `Recepción ${safe(reception.reception_id)}`);
-          card(margin + (kpiW + kpiGap) * 2, y, kpiW, kpiH, 'Vendidas netas', fmt(summary.piezas_netas_venta_desde_ultima_recepcion), `Devueltas ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}`);
-          card(margin + (kpiW + kpiGap) * 3, y, kpiW, kpiH, 'Ajuste stock', fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion), 'Salida no venta', summary.advertencia_salidas_superan_ultima_recepcion ? 'warning' : 'neutral');
-          card(margin + (kpiW + kpiGap) * 4, y, kpiW, kpiH, 'Stock actual', fmt(summary.stock_actual), `Disponible ${fmt(summary.stock_disponible)}`);
-          y += kpiH + 18;
-
-          if (summary.advertencia_salidas_superan_ultima_recepcion) {
-            const warningH = 54;
-            pdf.setDrawColor('#f59e0b');
-            pdf.setFillColor(amberBg);
-            pdf.roundedRect(margin, y, contentWidth, warningH, 11, 11, 'FD');
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(8);
-            pdf.setTextColor(amber);
-            pdf.text('ADVERTENCIA DE TRAZABILIDAD', margin + 13, y + 17);
-            wrappedText(summary.nota_trazabilidad, margin + 13, y + 35, contentWidth - 26, 8.2, dark, 'normal');
-            y += warningH + 18;
-          }
-
-          const boxH = 76;
-          pdf.setDrawColor(border);
-          pdf.setFillColor('#ffffff');
-          pdf.roundedRect(margin, y, contentWidth, boxH, 12, 12, 'FD');
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(8);
-          pdf.setTextColor(muted);
-          pdf.text('ÚLTIMA RECEPCIÓN', margin + 14, y + 17);
-          pdf.setFontSize(13);
-          pdf.setTextColor(dark);
-          pdf.text(`Recepción ${safe(reception.reception_id)} · ${safe(reception.movement_date)}`, margin + 14, y + 38);
-          pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(8.5);
-          pdf.setTextColor(dark);
-          pdf.text(`Piezas ${fmt(reception.quantity)} · Costo ${money(reception.cost)} · Stock al recibir ${fmt(reception.variant_stock)} · Doc ${safe(reception.document_number)} · Despacho ${safe(reception.internal_dispatch_id)}`, margin + 14, y + 57);
-          y += boxH + 22;
-
-          title('Movimientos por día', 'Ventas, devoluciones y ajustes desde la recepción');
-          const tableX = margin;
-          const tableW = contentWidth;
-          const col = [0, 92, 172, 252, 350, 452, 552];
-          const headers = ['Fecha', 'Vendidas', 'Devueltas', 'Ajuste', 'Salidas stock', 'Movs.', 'Barra diaria'];
-          const rowH = 24;
-
-          const drawDailyHeader = () => {
-            pdf.setFillColor('#eef2f7');
-            pdf.roundedRect(tableX, y, tableW, 22, 8, 8, 'F');
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(7.2);
-            pdf.setTextColor(muted);
-            headers.forEach((header, index) => pdf.text(header.toUpperCase(), tableX + col[index] + 8, y + 14));
-            y += 28;
-          };
-
-          drawDailyHeader();
-          const maxStockOut = Math.max(1, ...timeline.map((row) => numeric(row.stockOut)));
-          for (const row of timeline) {
-            ensureSpace(rowH + 22);
-            if (y < margin + 4) drawDailyHeader();
-            pdf.setDrawColor('#e2e8f0');
-            pdf.line(tableX, y + rowH, tableX + tableW, y + rowH);
-            pdf.setFont('helvetica', 'normal');
-            pdf.setFontSize(8.2);
-            pdf.setTextColor(dark);
-            pdf.text(safe(row.date), tableX + col[0] + 8, y + 16);
-            pdf.text(fmt(row.sold), tableX + col[1] + 8, y + 16);
-            pdf.text(fmt(row.returned), tableX + col[2] + 8, y + 16);
-            pdf.text(fmt(row.consumed), tableX + col[3] + 8, y + 16);
-            pdf.setFont('helvetica', 'bold');
-            pdf.setTextColor(row.consumed > 0 ? amber : green);
-            pdf.text(fmt(row.stockOut), tableX + col[4] + 8, y + 16);
-            pdf.setFont('helvetica', 'normal');
-            pdf.setTextColor(muted);
-            pdf.text(fmt(row.movements), tableX + col[5] + 8, y + 16);
-            const barX = tableX + col[6] + 8;
-            const barW = tableW - col[6] - 20;
-            const fillW = row.stockOut > 0 ? Math.max(4, (row.stockOut / maxStockOut) * barW) : 0;
-            pdf.setFillColor('#e2e8f0');
-            pdf.roundedRect(barX, y + 9, barW, 8, 4, 4, 'F');
-            if (fillW > 0) {
-              pdf.setFillColor(row.consumed > 0 ? '#f59e0b' : blue);
-              pdf.roundedRect(barX, y + 9, fillW, 8, 4, 4, 'F');
-            }
-            y += rowH;
-          }
-
-          y += 18;
-          ensureSpace(90);
-          title('Cobertura revisada', 'Lecturas realizadas en Bsale');
-          const coverageW = (contentWidth - 24) / 3;
-          card(margin, y, coverageW, 58, 'Recepciones', fmt(scanStats.receptions?.receptions_seen), `Matches ${fmt(scanStats.receptions?.matches)}`);
-          card(margin + coverageW + 12, y, coverageW, 58, 'Documentos', fmt(scanStats.documents?.documents_seen), `Líneas ${fmt(scanStats.documents?.details_seen)} · matches ${fmt(scanStats.documents?.matches)}`);
-          card(margin + (coverageW + 12) * 2, y, coverageW, 58, 'Consumos', fmt(scanStats.consumptions?.consumptions_seen_in_date_range), `Líneas ${fmt(scanStats.consumptions?.details_seen)} · matches ${fmt(scanStats.consumptions?.matches)}`);
-
-          if (movements.length) {
-            newPage();
-            title('Detalle de movimientos', `Primeros ${Math.min(60, movements.length)} de ${movements.length} movimientos detectados`);
-            const detailHeaders = ['Fecha', 'Tipo', 'Cantidad', 'Referencia / nota'];
-            const detailCols = [0, 92, 190, 270];
-            pdf.setFillColor('#eef2f7');
-            pdf.roundedRect(margin, y, contentWidth, 22, 8, 8, 'F');
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(7.2);
-            pdf.setTextColor(muted);
-            detailHeaders.forEach((header, index) => pdf.text(header.toUpperCase(), margin + detailCols[index] + 8, y + 14));
-            y += 28;
-
-            for (const movement of movements.slice(0, 60)) {
-              ensureSpace(24);
-              const type = movementTypeLabel(movement);
-              const qty = numeric(movement.quantity_signed ?? movement.quantity);
-              const note = movement.document_number
-                ? `Documento ${safe(movement.document_number)}`
-                : movement.consumption_id
-                  ? `Consumo ${safe(movement.consumption_id)}`
-                  : safe(movement.note);
-              pdf.setDrawColor('#e2e8f0');
-              pdf.line(margin, y + 22, margin + contentWidth, y + 22);
-              pdf.setFont('helvetica', 'normal');
-              pdf.setFontSize(8.1);
-              pdf.setTextColor(dark);
-              pdf.text(safe(movement.movement_date), margin + detailCols[0] + 8, y + 15);
-              pdf.text(type, margin + detailCols[1] + 8, y + 15);
-              pdf.setFont('helvetica', 'bold');
-              pdf.setTextColor(qty < 0 ? red : type.includes('ajuste') ? amber : green);
-              pdf.text(fmt(qty), margin + detailCols[2] + 8, y + 15);
-              pdf.setFont('helvetica', 'normal');
-              pdf.setTextColor(muted);
-              pdf.text(pdf.splitTextToSize(note, contentWidth - detailCols[3] - 16), margin + detailCols[3] + 8, y + 15);
-              y += 22;
-            }
-          }
-
-          addFooter();
-          const sku = input.value.trim() || 'sku';
-          const date = new Date().toISOString().slice(0, 10);
-          pdf.save(`sell-through-${fileSafe(sku)}-${date}.pdf`);
-        } finally {
-          pdfButton.disabled = false;
-          pdfButton.textContent = originalText;
+        const data = lastCalculation;
+        const stock = data.stock_matches?.[0] || {};
+        const summary = data.summary || {};
+        const timeline = groupByDay(data.movements || []);
+        const movements = data.movements || [];
+        const modeTitle = data.analysis_mode === 'period' ? 'Periodo explícito' : 'Última recepción';
+        const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+        const margin = 34;
+        let y = margin;
+        pdf.setFillColor('#172033');
+        pdf.roundedRect(margin, y, 774, 72, 14, 14, 'F');
+        pdf.setTextColor('#ffffff');
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(23);
+        pdf.text(`Reporte por SKU · ${modeTitle}`, margin + 18, y + 44);
+        pdf.setFontSize(9);
+        pdf.text(`SKU ${plain(stock.sku || data.query)} · ${plain(stock.office_name)} · ${plain(data.scan_start_date || data.start_date)} a ${plain(data.end_date)}`, margin + 18, y + 62);
+        y += 100;
+        const line = (label, value) => { pdf.setTextColor('#64748b'); pdf.setFontSize(8); pdf.text(label.toUpperCase(), margin, y); pdf.setTextColor('#172033'); pdf.setFontSize(15); pdf.text(String(value), margin + 170, y); y += 22; };
+        line('Recibidas', fmt(summary.piezas_recibidas_ultima_recepcion));
+        line('Vendidas netas', fmt(summary.piezas_netas_venta_desde_ultima_recepcion));
+        line('Ajuste stock', fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion));
+        line('Stock actual Bsale live', fmt(summary.stock_actual));
+        line('Sell-through venta', pct(summary.sell_through_pct));
+        y += 18;
+        pdf.setFont('helvetica', 'bold'); pdf.setFontSize(10); pdf.text('Movimientos por día', margin, y); y += 20;
+        pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8);
+        for (const row of timeline) {
+          if (y > 540) { pdf.addPage(); y = margin; }
+          pdf.text(`${row.date} · recibidas ${fmt(row.received)} · vendidas ${fmt(row.sold)} · devueltas ${fmt(row.returned)} · ajuste ${fmt(row.consumed)} · salidas ${fmt(row.stockOut)}`, margin, y);
+          y += 15;
         }
+        if (movements.length) {
+          pdf.addPage(); y = margin;
+          pdf.setFont('helvetica', 'bold'); pdf.setFontSize(10); pdf.text('Detalle de movimientos', margin, y); y += 20;
+          pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8);
+          for (const movement of movements.slice(0, 80)) {
+            if (y > 540) { pdf.addPage(); y = margin; }
+            pdf.text(`${plain(movement.movement_date)} · ${movementLabel(movement)} · ${fmt(movement.quantity_signed ?? movement.quantity)} pzas · ${plain(movement.note)}`, margin, y, { maxWidth: 760 });
+            y += 15;
+          }
+        }
+        pdf.save(`sell-through-${fileSafe(input.value.trim() || data.query)}-${ymd()}.pdf`);
       };
 
       pdfButton.addEventListener('click', downloadPdf);
 
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
-
-        const searchValue = input.value.trim();
-        const officeId = Number(officeSelect.value);
-        const lookbackDays = Number(lookbackSelect.value);
-
-        if (!searchValue) {
-          setStatus('Escribe un SKU o código de barras.');
-          result.innerHTML = '';
-          return;
-        }
-
-        button.disabled = true;
-        lastCalculation = null;
-        setPdfAvailable(false);
-        result.innerHTML = '';
-        setStatus('Calculando sell-through live v2 desde Bsale...');
-
-        const { data, error } = await supabase.functions.invoke('calculate-sell-through-live-v2', {
-          body: {
-            query: searchValue,
-            office_ids: [officeId],
-            lookback_days: lookbackDays,
-            max_reception_pages_per_office: 0,
-            max_document_pages_per_day_type: 0,
-            max_consumption_pages_per_office: 0,
-            max_reception_details: 1000,
-            max_document_details: 1000,
-            max_consumption_details: 1000,
-          },
-        });
-
-        button.disabled = false;
-        setStatus('');
-
+        const query = input.value.trim();
+        const mode = modeSelect.value;
+        if (!query) return setStatus('Escribe un SKU o código de barras.');
+        if (mode === 'period' && (!periodStart.value || !periodEnd.value)) return setStatus('Selecciona fecha inicial y fecha final.');
+        if (mode === 'period' && periodStart.value > periodEnd.value) return setStatus('La fecha inicial no puede ser mayor que la fecha final.');
+        button.disabled = true; showPdf(false); result.innerHTML = ''; setStatus(mode === 'period' ? 'Calculando periodo...' : 'Buscando última recepción...');
+        const body = { query, office_ids: [Number(officeSelect.value)], analysis_mode: mode, lookback_days: 365, max_reception_pages_per_office: 0, max_document_pages_per_day_type: 0, max_consumption_pages_per_office: 0, max_reception_details: 1000, max_document_details: 1000, max_consumption_details: 1000 };
+        if (mode === 'period') { body.period_start_date = periodStart.value; body.period_end_date = periodEnd.value; }
+        const { data, error } = await supabase.functions.invoke('calculate-sell-through-live-v2', { body });
+        button.disabled = false; setStatus('');
         if (error) return renderError(error);
         if (data?.error) return renderError(data.error);
         renderData(data);
@@ -657,424 +217,38 @@
 </html>
 
 <style is:global>
-  :root {
-    font-family:
-      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-      sans-serif;
-    color: #172033;
-    background:
-      radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 32rem),
-      #f4f6fb;
-  }
-
-  * {
-    box-sizing: border-box;
-  }
-
-  body {
-    margin: 0;
-  }
-
-  .page {
-    width: min(1220px, calc(100% - 56px));
-    margin: 0 auto;
-    padding: 34px 0 48px;
-  }
-
-  .hero {
-    margin-bottom: 22px;
-  }
-
-  .eyebrow,
-  .section-kicker {
-    margin: 0 0 8px;
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 900;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: clamp(38px, 4vw, 58px);
-    line-height: 0.98;
-    letter-spacing: -0.045em;
-  }
-
-  h2,
-  h3 {
-    margin: 0;
-    letter-spacing: -0.025em;
-  }
-
-  h2 {
-    font-size: 22px;
-  }
-
-  h3 {
-    font-size: 18px;
-  }
-
-  .subtitle {
-    max-width: 820px;
-    margin: 12px 0 0;
-    color: #64748b;
-    font-size: 16px;
-    line-height: 1.45;
-  }
-
-  .panel,
-  .section-card {
-    background: rgba(255, 255, 255, 0.94);
-    border: 1px solid #dbe3ef;
-    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.08);
-  }
-
-  .panel {
-    border-radius: 28px;
-    padding: 18px;
-  }
-
-  .search-form {
-    display: grid;
-    grid-template-columns: minmax(320px, 1.2fr) minmax(220px, 0.8fr) minmax(220px, 0.75fr) 124px;
-    gap: 12px;
-    align-items: end;
-    padding: 4px 4px 16px;
-    border-bottom: 1px solid #e2e8f0;
-  }
-
-  label {
-    display: grid;
-    gap: 7px;
-    color: #334155;
-    font-size: 12px;
-    font-weight: 900;
-  }
-
-  input,
-  select,
-  button {
-    width: 100%;
-    min-height: 46px;
-    border-radius: 14px;
-    border: 1px solid #cbd5e1;
-    padding: 11px 13px;
-    font: inherit;
-    font-size: 14px;
-  }
-
-  input,
-  select {
-    background: #f8fafc;
-    color: #172033;
-  }
-
-  button {
-    border: 0;
-    background: #172033;
-    color: #ffffff;
-    font-weight: 900;
-    cursor: pointer;
-  }
-
-  button:disabled {
-    cursor: wait;
-    opacity: 0.65;
-  }
-
-  .secondary-button {
-    width: auto;
-    min-height: 36px;
-    padding: 8px 12px;
-    border: 1px solid #cbd5e1;
-    background: #ffffff;
-    color: #172033;
-    font-size: 12px;
-  }
-
-  .actions-row {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 50px;
-    padding: 0 4px;
-  }
-
-  .status {
-    color: #64748b;
-    font-size: 13px;
-    font-weight: 800;
-  }
-
-  .result {
-    display: grid;
-    gap: 16px;
-  }
-
-  .section-card {
-    border-radius: 24px;
-    padding: 18px;
-  }
-
-  .muted-card {
-    background: #f8fafc;
-  }
-
-  .warning-card {
-    border-color: #f59e0b;
-    background: #fffbeb;
-  }
-
-  .error-card {
-    border-color: #fecaca;
-    background: #fff7f7;
-  }
-
-  .section-header {
-    display: flex;
-    gap: 14px;
-    align-items: start;
-    justify-content: space-between;
-    margin-bottom: 18px;
-  }
-
-  .section-header.tight {
-    margin-bottom: 4px;
-  }
-
-  .badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 26px;
-    border-radius: 999px;
-    padding: 6px 11px;
-    white-space: nowrap;
-    font-size: 12px;
-    font-weight: 900;
-  }
-
-  .badge.success { background: #dcfce7; color: #166534; }
-  .badge.warning { background: #fef3c7; color: #92400e; }
-  .badge.danger { background: #fee2e2; color: #991b1b; }
-  .badge.neutral { background: #e2e8f0; color: #334155; }
-
-  .result-layout {
-    display: grid;
-    grid-template-columns: minmax(280px, 0.82fr) 1.18fr;
-    gap: 14px;
-  }
-
-  .sellthrough-panel {
-    display: grid;
-    grid-template-columns: 128px 1fr;
-    gap: 18px;
-    align-items: center;
-    min-height: 190px;
-    border-radius: 22px;
-    padding: 18px;
-    background: linear-gradient(135deg, #172033, #25324c);
-    color: #ffffff;
-  }
-
-  .gauge {
-    --value: 0;
-    width: 128px;
-    aspect-ratio: 1;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    background:
-      conic-gradient(#60a5fa calc(var(--value) * 1%), rgba(255, 255, 255, 0.14) 0),
-      #1e293b;
-  }
-
-  .gauge-inner {
-    width: 94px;
-    aspect-ratio: 1;
-    display: grid;
-    place-items: center;
-    align-content: center;
-    gap: 3px;
-    border-radius: 50%;
-    background: #172033;
-    text-align: center;
-  }
-
-  .gauge-inner strong {
-    font-size: 25px;
-    letter-spacing: -0.05em;
-  }
-
-  .gauge-inner span,
-  .metric-help { color: #cbd5e1; }
-
-  .metric-label {
-    margin: 0 0 8px;
-    font-size: 13px;
-    font-weight: 900;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-  }
-
-  .metric-help {
-    margin: 0;
-    font-size: 16px;
-    line-height: 1.45;
-  }
-
-  .summary-grid,
-  .coverage-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  .summary-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-
-  .card,
-  .coverage-item {
-    min-height: 88px;
-    border: 1px solid #dbe3ef;
-    border-radius: 18px;
-    padding: 14px;
-    background: #f8fafc;
-  }
-
-  .card.primary { background: #172033; color: #ffffff; }
-  .card.warning-soft { border-color: #f59e0b; background: #fffbeb; }
-
-  .card span,
-  .coverage-item span,
-  dt,
-  .timeline-date small,
-  .movement-row small {
-    color: #64748b;
-    font-size: 11px;
-    font-weight: 900;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  .card strong,
-  .coverage-item strong {
-    display: block;
-    margin-top: 8px;
-    color: inherit;
-    font-size: 28px;
-    line-height: 1;
-    letter-spacing: -0.04em;
-  }
-
-  .card small,
-  .coverage-item p,
-  .muted { color: #64748b; line-height: 1.45; }
-
-  .card small {
-    display: block;
-    margin-top: 8px;
-    font-size: 12px;
-    font-weight: 800;
-  }
-
-  .card.primary small,
-  .card.primary span { color: #cbd5e1; }
-
-  .block-note { margin: 12px 0 0; }
-
-  .detail-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 14px;
-    margin: 0;
-  }
-
-  .detail-grid div.wide { grid-column: 1 / -1; }
-  dt, dd { margin: 0; }
-  dd { margin-top: 5px; color: #172033; font-size: 15px; font-weight: 900; line-height: 1.3; }
-
-  .timeline { display: grid; gap: 12px; }
-
-  .timeline-day {
-    display: grid;
-    grid-template-columns: 136px 1fr;
-    gap: 14px;
-    align-items: center;
-    border: 1px solid #e2e8f0;
-    border-radius: 18px;
-    padding: 13px;
-    background: #ffffff;
-  }
-
-  .timeline-date { display: grid; gap: 4px; }
-  .bar-shell { height: 12px; overflow: hidden; border-radius: 999px; background: #e2e8f0; }
-  .bar { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #60a5fa, #2563eb); }
-  .timeline-main { display: grid; gap: 8px; }
-  .pill-row { display: flex; flex-wrap: wrap; gap: 7px; }
-
-  .pill-row span {
-    display: inline-flex;
-    gap: 4px;
-    align-items: baseline;
-    border-radius: 999px;
-    padding: 6px 9px;
-    background: #f1f5f9;
-    color: #475569;
-    font-size: 12px;
-    font-weight: 800;
-  }
-
-  .movement-list { display: grid; gap: 9px; }
-
-  .movement-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-    align-items: center;
-    border: 1px solid #e2e8f0;
-    border-radius: 16px;
-    padding: 12px;
-    background: #ffffff;
-  }
-
-  .movement-row.in { border-color: #bbf7d0; }
-  .movement-row.adjust { border-color: #fcd34d; background: #fffbeb; }
-  .movement-row.return { border-color: #fecaca; }
-
-  .movement-row small {
-    display: block;
-    margin-top: 4px;
-    line-height: 1.3;
-    text-transform: none;
-    letter-spacing: 0;
-  }
-
-  .movement-qty { min-width: 94px; text-align: right; }
-  .movement-qty strong { display: block; font-size: 20px; }
-  .coverage-item p { margin: 7px 0 0; font-size: 12px; }
-
-  @media (max-width: 980px) {
-    .page { width: min(100% - 28px, 1220px); padding-top: 22px; }
-    .search-form,
-    .result-layout,
-    .summary-grid,
-    .summary-grid.compact,
-    .coverage-grid,
-    .detail-grid { grid-template-columns: 1fr; }
-  }
-
-  @media (max-width: 640px) {
-    .page { width: min(100% - 18px, 1220px); }
-    .panel,
-    .section-card { border-radius: 18px; padding: 13px; }
-    .actions-row,
-    .section-header,
-    .sellthrough-panel,
-    .timeline-day,
-    .movement-row { display: grid; justify-content: stretch; }
-    .movement-qty { min-width: 0; text-align: left; }
-  }
+  :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: radial-gradient(circle at top left, rgba(37,99,235,.08), transparent 32rem), #f4f6fb; }
+  * { box-sizing: border-box; } body { margin: 0; }
+  .page { width: min(1220px, calc(100% - 56px)); margin: 0 auto; padding: 34px 0 48px; }
+  .hero { margin-bottom: 22px; } .eyebrow, .section-kicker { margin: 0 0 8px; color: #64748b; font-size: 12px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
+  h1 { margin: 0; font-size: clamp(38px, 4vw, 58px); line-height: .98; letter-spacing: -.045em; } h2, h3 { margin: 0; letter-spacing: -.025em; } h2 { font-size: 22px; }
+  .subtitle { max-width: 850px; margin: 12px 0 0; color: #64748b; font-size: 16px; line-height: 1.45; }
+  .panel, .section-card { background: rgba(255,255,255,.94); border: 1px solid #dbe3ef; box-shadow: 0 24px 80px rgba(15,23,42,.08); }
+  .panel { border-radius: 28px; padding: 18px; }
+  .search-form { display: grid; grid-template-columns: minmax(260px,1.2fr) minmax(210px,.8fr) minmax(190px,.7fr) 124px; gap: 12px; align-items: end; padding: 4px 4px 16px; border-bottom: 1px solid #e2e8f0; }
+  .search-form.period-mode { grid-template-columns: minmax(220px,1.2fr) minmax(180px,.8fr) minmax(160px,.7fr) minmax(145px,.65fr) minmax(145px,.65fr) 124px; }
+  label { display: grid; gap: 7px; color: #334155; font-size: 12px; font-weight: 900; }
+  input, select, button { width: 100%; min-height: 46px; border-radius: 14px; border: 1px solid #cbd5e1; padding: 11px 13px; font: inherit; font-size: 14px; }
+  input, select { background: #f8fafc; color: #172033; } button { border: 0; background: #172033; color: #fff; font-weight: 900; cursor: pointer; } button:disabled { cursor: wait; opacity: .65; }
+  .secondary-button { width: auto; min-height: 36px; padding: 8px 12px; border: 1px solid #cbd5e1; background: #fff; color: #172033; font-size: 12px; }
+  .actions-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; min-height: 50px; padding: 0 4px; }
+  .status { color: #64748b; font-size: 13px; font-weight: 800; } .result { display: grid; gap: 16px; } .section-card { border-radius: 24px; padding: 18px; } .muted-card { background: #f8fafc; } .warning-card { border-color: #f59e0b; background: #fffbeb; } .error-card { border-color: #fecaca; background: #fff7f7; }
+  .section-header { display: flex; gap: 14px; align-items: start; justify-content: space-between; margin-bottom: 18px; } .section-header.tight { margin-bottom: 4px; }
+  .badge { display: inline-flex; align-items: center; justify-content: center; min-height: 26px; border-radius: 999px; padding: 6px 11px; white-space: nowrap; font-size: 12px; font-weight: 900; }
+  .badge.success { background: #dcfce7; color: #166534; } .badge.warning { background: #fef3c7; color: #92400e; } .badge.danger { background: #fee2e2; color: #991b1b; } .badge.neutral { background: #e2e8f0; color: #334155; }
+  .result-layout { display: grid; grid-template-columns: minmax(280px,.82fr) 1.18fr; gap: 14px; }
+  .sellthrough-panel { display: grid; grid-template-columns: 128px 1fr; gap: 18px; align-items: center; min-height: 190px; border-radius: 22px; padding: 18px; background: linear-gradient(135deg,#172033,#25324c); color: #fff; }
+  .gauge { --value: 0; width: 128px; aspect-ratio: 1; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(#60a5fa calc(var(--value) * 1%), rgba(255,255,255,.14) 0), #1e293b; }
+  .gauge-inner { width: 94px; aspect-ratio: 1; display: grid; place-items: center; align-content: center; gap: 3px; border-radius: 50%; background: #172033; text-align: center; } .gauge-inner strong { font-size: 25px; letter-spacing: -.05em; } .gauge-inner span, .metric-help { color: #cbd5e1; }
+  .metric-label { margin: 0 0 8px; font-size: 13px; font-weight: 900; letter-spacing: .03em; text-transform: uppercase; } .metric-help { margin: 0; font-size: 16px; line-height: 1.45; }
+  .summary-grid, .coverage-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; } .summary-grid.compact { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .card, .coverage-item { min-height: 88px; border: 1px solid #dbe3ef; border-radius: 18px; padding: 14px; background: #f8fafc; } .card.primary { background: #172033; color: #fff; }
+  .card span, .coverage-item span, dt, .timeline-date small, .movement-row small { color: #64748b; font-size: 11px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; }
+  .card strong, .coverage-item strong { display: block; margin-top: 8px; color: inherit; font-size: 28px; line-height: 1; letter-spacing: -.04em; } .card small, .coverage-item p, .muted { color: #64748b; line-height: 1.45; } .card small { display: block; margin-top: 8px; font-size: 12px; font-weight: 800; } .card.primary small, .card.primary span { color: #cbd5e1; } .block-note { margin: 12px 0 0; }
+  .detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; margin: 0; } .detail-grid div.wide { grid-column: 1 / -1; } dt, dd { margin: 0; } dd { margin-top: 5px; color: #172033; font-size: 15px; font-weight: 900; line-height: 1.3; }
+  .timeline { display: grid; gap: 12px; } .timeline-day { display: grid; grid-template-columns: 136px 1fr; gap: 14px; align-items: center; border: 1px solid #e2e8f0; border-radius: 18px; padding: 13px; background: #fff; } .timeline-date { display: grid; gap: 4px; } .pill-row { display: flex; flex-wrap: wrap; gap: 7px; } .pill-row span { display: inline-flex; gap: 4px; align-items: baseline; border-radius: 999px; padding: 6px 9px; background: #f1f5f9; color: #475569; font-size: 12px; font-weight: 800; }
+  .movement-list { display: grid; gap: 9px; } .movement-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; border: 1px solid #e2e8f0; border-radius: 16px; padding: 12px; background: #fff; } .movement-row.in { border-color: #bbf7d0; background: #f0fdf4; } .movement-row.adjust { border-color: #fcd34d; background: #fffbeb; } .movement-row.return { border-color: #fecaca; background: #fff7f7; } .movement-row small { display: block; margin-top: 4px; line-height: 1.3; text-transform: none; letter-spacing: 0; } .movement-qty { min-width: 94px; text-align: right; } .movement-qty strong { display: block; font-size: 20px; } .coverage-item p { margin: 7px 0 0; font-size: 12px; }
+  @media (max-width: 1180px) { .search-form, .search-form.period-mode { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 980px) { .page { width: min(100% - 28px, 1220px); padding-top: 22px; } .result-layout, .summary-grid, .summary-grid.compact, .coverage-grid, .detail-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) { .page { width: min(100% - 18px, 1220px); } .panel, .section-card { border-radius: 18px; padding: 13px; } .search-form, .search-form.period-mode, .actions-row, .section-header, .sellthrough-panel, .timeline-day, .movement-row { display: grid; grid-template-columns: 1fr; justify-content: stretch; } .movement-qty { min-width: 0; text-align: left; } }
 </style>
