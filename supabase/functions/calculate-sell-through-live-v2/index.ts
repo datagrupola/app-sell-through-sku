@@ -1,5 +1,5 @@
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
-const FUNCTION_VERSION = 'v2.3-closed-through-yesterday';
+const FUNCTION_VERSION = 'v2.3.1-office-label-fallback';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -31,6 +31,12 @@ const i = (value: unknown): number | null => {
 const b = (value: unknown): boolean => String(value) === '1' || value === true;
 const sku = (value: unknown): string => String(value ?? '').trim().toUpperCase();
 const barcode = (value: unknown): string => String(value ?? '').trim().replace(/\s+/g, '');
+const officeName = (officeId: number): string => {
+  if (officeId === 2) return 'CHINO LAS AMERICAS';
+  if (officeId === 3) return 'CHINO LA HUERTA';
+  if (officeId === 4) return 'CHINO LEON CENTRO';
+  return `OFFICE ${officeId}`;
+};
 const ymd = (unix: unknown): string | null => {
   const parsed = i(unix);
   return parsed === null ? null : new Date(parsed * 1000).toISOString().slice(0, 10);
@@ -116,19 +122,21 @@ async function liveStocks(rows: Row[]) {
       const live = await bsale(`stocks/${row.stock_id}.json`, { expand: '[office,variant]' });
       const office = live.office ?? {};
       const variant = live.variant ?? {};
+      const officeId = n(office.id ?? row.office_id);
       out.push({
         source: 'BSALE_LIVE', live_ok: true,
-        office_id: n(office.id ?? row.office_id), office_name: office.name ?? null,
+        office_id: officeId, office_name: office.name ?? officeName(officeId),
         variant_id: n(variant.id ?? row.variant_id), stock_id: n(live.id ?? row.stock_id),
         sku: variant.code ?? row.sku_norm, barcode: variant.barCode ?? row.barcode_norm,
         quantity: n(live.quantity ?? row.quantity), quantity_reserved: n(live.quantityReserved ?? row.quantity_reserved),
         quantity_available: n(live.quantityAvailable ?? row.quantity_available), index_synced_at: row.synced_at,
       });
     } catch (err) {
+      const officeId = n(row.office_id);
       out.push({
         source: 'SUPABASE_INDEX_FALLBACK', live_ok: false,
         live_error: err instanceof Error ? err.message : String(err),
-        office_id: row.office_id, office_name: null, variant_id: row.variant_id, stock_id: row.stock_id,
+        office_id: officeId, office_name: officeName(officeId), variant_id: row.variant_id, stock_id: row.stock_id,
         sku: row.sku_norm, barcode: row.barcode_norm,
         quantity: n(row.quantity), quantity_reserved: n(row.quantity_reserved), quantity_available: n(row.quantity_available),
         index_synced_at: row.synced_at,
@@ -374,6 +382,18 @@ function summary(stockMatches: Row[], lastReception: ReceptionResult, docMovemen
   };
 }
 
+function fallbackStockMatches(officeIds: number[], variantIds: Set<number>, query: string) {
+  const firstVariantId = sortedIds(variantIds)[0] ?? null;
+  return officeIds.map((officeId) => ({
+    source: 'OFFICE_SELECTION_FALLBACK', live_ok: false,
+    office_id: officeId, office_name: officeName(officeId),
+    variant_id: firstVariantId, stock_id: null,
+    sku: sku(query), barcode: barcode(query),
+    quantity: 0, quantity_reserved: 0, quantity_available: 0,
+    index_synced_at: null,
+  }));
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   try {
@@ -398,7 +418,7 @@ Deno.serve(async (req) => {
     const variantIds = new Set<number>();
     stockRows.forEach((row) => { if (row.variant_id) variantIds.add(Number(row.variant_id)); });
     aliasRows.forEach((row) => { if (row.variant_id) variantIds.add(Number(row.variant_id)); });
-    const stockMatches = await liveStocks(stockRows);
+    let stockMatches = await liveStocks(stockRows);
 
     if (!variantIds.size) {
       return new Response(JSON.stringify({
@@ -407,6 +427,8 @@ Deno.serve(async (req) => {
         stock_matches: stockMatches, alias_matches: aliasRows.length, index_matches: stockRows.length,
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
+
+    if (!stockMatches.length) stockMatches = fallbackStockMatches(officeIds, variantIds, query);
 
     const receptionResult = await findLastReception(officeIds, variantIds, startDate, endDate, maxReceptionDetails, maxReceptionPages);
     receptionResult.stats.lookup_windows = [Math.max(1, Math.trunc(lookbackDays || 365))];
