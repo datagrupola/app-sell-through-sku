@@ -1,5 +1,5 @@
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
-const FUNCTION_VERSION = 'v2.3.1-office-label-fallback';
+const FUNCTION_VERSION = 'v2.4-period-mode';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -15,7 +15,7 @@ const DOC_INDEX_LIMIT = 1000;
 const CONSUMPTION_LIMIT = 50;
 
 type Row = Record<string, unknown>;
-type ReceptionResult = null | { movement: Row; date: string; reception_id: number; quantity: number; cost: number };
+type ReceptionResult = { movement: Row; date: string; reception_id: number; quantity: number; cost: number };
 
 const n = (value: unknown): number => {
   const parsed = Number(value ?? 0);
@@ -53,6 +53,8 @@ const daysAgo = (days: number): string => {
 };
 const unixUtc = (dateText: string, end = false): number =>
   Math.floor(new Date(`${dateText}${end ? 'T23:59:59Z' : 'T00:00:00Z'}`).getTime() / 1000);
+const validDate = (value: unknown): boolean => /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? ''));
+const minDate = (a: string, bb: string): string => a <= bb ? a : bb;
 const inFilter = (values: Array<string | number>): string => `in.(${values.join(',')})`;
 const sortedIds = (set: Set<number>): number[] => Array.from(set).sort((a, b) => a - b);
 const docType = (typeId: number): string => SALE_TYPES.has(typeId) ? 'VENTA' : RETURN_TYPES.has(typeId) ? 'DEVOLUCION' : 'OTRO_DOCUMENTO';
@@ -146,6 +148,18 @@ async function liveStocks(rows: Row[]) {
   return out;
 }
 
+function fallbackStockMatches(officeIds: number[], variantIds: Set<number>, query: string) {
+  const firstVariantId = sortedIds(variantIds)[0] ?? null;
+  return officeIds.map((officeId) => ({
+    source: 'OFFICE_SELECTION_FALLBACK', live_ok: false,
+    office_id: officeId, office_name: officeName(officeId),
+    variant_id: firstVariantId, stock_id: null,
+    sku: sku(query), barcode: barcode(query),
+    quantity: 0, quantity_reserved: 0, quantity_available: 0,
+    index_synced_at: null,
+  }));
+}
+
 async function details(path: string, maxDetails: number) {
   const items: Row[] = [];
   let offset = 0;
@@ -186,8 +200,8 @@ function buildReception(reception: Row, officeId: number, date: string, receptio
   };
 }
 
-async function findLastReception(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string, maxDetails: number, maxPages: number) {
-  let last: ReceptionResult = null;
+async function scanReceptions(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string, maxDetails: number, maxPages: number, stopAfterFirstMatch: boolean) {
+  const receptionsFound: ReceptionResult[] = [];
   const stats = { pages: 0, count_requests: 0, receptions_seen: 0, details_seen: 0, matches: 0, lookup_windows: [] as number[], stopped_after_first_match: false, assumed_reception_order: 'oldest_first_reverse_scan', start_offsets: [] as Row[], detail_errors: [] as Row[] };
 
   for (const officeId of officeIds) {
@@ -197,10 +211,10 @@ async function findLastReception(officeIds: number[], variantIds: Set<number>, s
     if (!count) continue;
     let offset = Math.max(0, count - RECEPTION_LIMIT);
     let pages = 0;
-    let stop = false;
+    let stopOffice = false;
     stats.start_offsets.push({ office_id: officeId, count, start_offset: offset });
 
-    while (offset >= 0 && !stop) {
+    while (offset >= 0 && !stopOffice) {
       if (maxPages > 0 && pages >= maxPages) break;
       const page = await bsale('stocks/receptions.json', { officeid: officeId, expand: '[office]', limit: RECEPTION_LIMIT, offset });
       const receptions = ((page.items ?? []) as Row[]).slice().reverse();
@@ -212,7 +226,7 @@ async function findLastReception(officeIds: number[], variantIds: Set<number>, s
         stats.receptions_seen += 1;
         const date = ymd(reception.admissionDate);
         if (date && date > endDate) continue;
-        if (date && date < startDate) { stop = true; break; }
+        if (date && date < startDate) { stopOffice = true; break; }
         if (!date || date < startDate || date > endDate) continue;
         const receptionId = n(reception.id);
         let dets: Row[] = [];
@@ -234,16 +248,19 @@ async function findLastReception(officeIds: number[], variantIds: Set<number>, s
         }
         if (!matches.length) continue;
         stats.matches += matches.length;
-        const candidate = buildReception(reception, officeId, date, receptionId, matches);
-        if (!last || candidate!.date > last.date || (candidate!.date === last.date && candidate!.reception_id > last.reception_id)) last = candidate;
-        stop = true;
-        break;
+        receptionsFound.push(buildReception(reception, officeId, date, receptionId, matches));
+        if (stopAfterFirstMatch) {
+          stats.stopped_after_first_match = true;
+          stopOffice = true;
+          break;
+        }
       }
       offset -= RECEPTION_LIMIT;
     }
   }
-  stats.stopped_after_first_match = Boolean(last);
-  return { last_reception: last, stats };
+
+  receptionsFound.sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.reception_id - a.reception_id);
+  return { receptions: receptionsFound, stats };
 }
 
 async function scanDocuments(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string) {
@@ -353,8 +370,7 @@ async function scanConsumptions(officeIds: number[], variantIds: Set<number>, st
   return { movements, stats };
 }
 
-function summary(stockMatches: Row[], lastReception: ReceptionResult, docMovements: Row[], consumptionMovements: Row[]) {
-  const received = n(lastReception?.quantity);
+function summary(stockMatches: Row[], received: number, docMovements: Row[], consumptionMovements: Row[]) {
   const sold = docMovements.filter((x) => x.movement_group === 'VENTA').reduce((sum, x) => sum + n(x.quantity), 0);
   const returned = docMovements.filter((x) => x.movement_group === 'DEVOLUCION').reduce((sum, x) => sum + n(x.quantity), 0);
   const consumed = consumptionMovements.reduce((sum, x) => sum + n(x.quantity), 0);
@@ -366,6 +382,7 @@ function summary(stockMatches: Row[], lastReception: ReceptionResult, docMovemen
   const outflowExceedsReception = received > 0 && stockOutflow > received;
   return {
     piezas_recibidas_ultima_recepcion: received,
+    piezas_recibidas_periodo: received,
     piezas_vendidas_desde_ultima_recepcion: sold,
     piezas_devueltas_desde_ultima_recepcion: returned,
     piezas_netas_venta_desde_ultima_recepcion: netSold,
@@ -378,20 +395,12 @@ function summary(stockMatches: Row[], lastReception: ReceptionResult, docMovemen
     sell_through_pct: received > 0 ? Math.round((netSold / received) * 10000) / 100 : null,
     salidas_vs_recepcion_pct: received > 0 ? Math.round((stockOutflow / received) * 10000) / 100 : null,
     advertencia_salidas_superan_ultima_recepcion: outflowExceedsReception,
-    nota_trazabilidad: outflowExceedsReception ? 'Las salidas de stock desde la última recepción superan la cantidad recibida; no se puede atribuir todo a ese lote sin una regla FIFO explícita.' : null,
+    nota_trazabilidad: outflowExceedsReception ? 'Las salidas de stock superan las entradas del rango analizado; no se puede atribuir todo a ese lote/periodo sin una regla FIFO explícita.' : null,
   };
 }
 
-function fallbackStockMatches(officeIds: number[], variantIds: Set<number>, query: string) {
-  const firstVariantId = sortedIds(variantIds)[0] ?? null;
-  return officeIds.map((officeId) => ({
-    source: 'OFFICE_SELECTION_FALLBACK', live_ok: false,
-    office_id: officeId, office_name: officeName(officeId),
-    variant_id: firstVariantId, stock_id: null,
-    sku: sku(query), barcode: barcode(query),
-    quantity: 0, quantity_reserved: 0, quantity_available: 0,
-    index_synced_at: null,
-  }));
+function sortMovements(items: Row[]) {
+  return items.sort((a, bb) => String(bb.movement_date).localeCompare(String(a.movement_date)) || String(bb.source).localeCompare(String(a.source)));
 }
 
 Deno.serve(async (req) => {
@@ -404,6 +413,7 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const query = String(body.query ?? '').trim();
     const officeIds = Array.isArray(body.office_ids) ? body.office_ids.map(Number).filter(Boolean) : [2, 3, 4];
+    const mode = String(body.analysis_mode ?? body.search_mode ?? 'last_reception') === 'period' ? 'period' : 'last_reception';
     const lookbackDays = n(body.lookback_days ?? 365);
     const maxReceptionPages = n(body.max_reception_pages_per_office ?? 0);
     const maxConsumptionPages = n(body.max_consumption_pages_per_office ?? 0);
@@ -411,8 +421,23 @@ Deno.serve(async (req) => {
     const maxConsumptionDetails = Math.max(1000, n(body.max_consumption_details ?? 1000));
     if (!query) return new Response(JSON.stringify({ error: 'Missing query' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
-    const endDate = yesterdayUtc();
-    const startDate = daysAgo(Math.max(1, Math.trunc(lookbackDays || 365)));
+    const closedEndDate = yesterdayUtc();
+    let startDate = daysAgo(Math.max(1, Math.trunc(lookbackDays || 365)));
+    let endDate = closedEndDate;
+
+    if (mode === 'period') {
+      const requestedStart = String(body.period_start_date ?? body.start_date ?? '').trim();
+      const requestedEnd = String(body.period_end_date ?? body.end_date ?? '').trim();
+      if (!validDate(requestedStart) || !validDate(requestedEnd)) {
+        return new Response(JSON.stringify({ function_version: FUNCTION_VERSION, error: 'Periodo inválido. Usa period_start_date y period_end_date en formato YYYY-MM-DD.' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+      startDate = requestedStart;
+      endDate = minDate(requestedEnd, closedEndDate);
+      if (startDate > endDate) {
+        return new Response(JSON.stringify({ function_version: FUNCTION_VERSION, error: `Periodo inválido para la regla hasta ayer. start_date=${startDate}, end_date=${endDate}` }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+    }
+
     const stockRows = await findStockRows(query, officeIds);
     const aliasRows = await findAliasRows(query);
     const variantIds = new Set<number>();
@@ -422,7 +447,7 @@ Deno.serve(async (req) => {
 
     if (!variantIds.size) {
       return new Response(JSON.stringify({
-        found: false, function_version: FUNCTION_VERSION, query, office_ids: officeIds, end_date: endDate,
+        found: false, function_version: FUNCTION_VERSION, analysis_mode: mode, query, office_ids: officeIds, start_date: startDate, end_date: endDate,
         data_policy: 'closed_through_yesterday_utc', message: 'No se encontró variant_id en bsale_stock_current ni bsale_sku_aliases.',
         stock_matches: stockMatches, alias_matches: aliasRows.length, index_matches: stockRows.length,
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -430,37 +455,60 @@ Deno.serve(async (req) => {
 
     if (!stockMatches.length) stockMatches = fallbackStockMatches(officeIds, variantIds, query);
 
-    const receptionResult = await findLastReception(officeIds, variantIds, startDate, endDate, maxReceptionDetails, maxReceptionPages);
-    receptionResult.stats.lookup_windows = [Math.max(1, Math.trunc(lookbackDays || 365))];
+    if (mode === 'period') {
+      const receptionScan = await scanReceptions(officeIds, variantIds, startDate, endDate, maxReceptionDetails, maxReceptionPages, false);
+      const docResult = await scanDocuments(officeIds, variantIds, startDate, endDate);
+      const consumptionResult = await scanConsumptions(officeIds, variantIds, startDate, endDate, maxConsumptionPages, maxConsumptionDetails);
+      const receptionMovements = receptionScan.receptions.map((item) => item.movement);
+      const received = receptionScan.receptions.reduce((sum, item) => sum + n(item.quantity), 0);
+      const movements = sortMovements([...receptionMovements, ...docResult.movements, ...consumptionResult.movements]);
 
-    if (!receptionResult.last_reception) {
       return new Response(JSON.stringify({
-        found: true, sell_through_found: false, function_version: FUNCTION_VERSION, query, office_ids: officeIds,
+        found: true, sell_through_found: true, function_version: FUNCTION_VERSION, analysis_mode: mode, query, office_ids: officeIds,
+        variant_ids: sortedIds(variantIds), start_date: startDate, scan_start_date: startDate, end_date: endDate,
+        data_policy: 'closed_through_yesterday_utc', stock_matches: stockMatches,
+        last_reception: receptionScan.receptions[0]?.movement ?? null,
+        period_receptions: receptionMovements,
+        summary: summary(stockMatches, received, docResult.movements, consumptionResult.movements), movements,
+        scan_stats: { receptions: receptionScan.stats, documents: docResult.stats, consumptions: consumptionResult.stats },
+        diagnostic: {
+          phase: 'complete', analysis_mode: mode, reception_order_strategy: receptionScan.stats.assumed_reception_order,
+          document_scan_start: startDate, document_scan_source: docResult.stats.source,
+          consumption_scan_start: startDate, data_policy: 'closed_through_yesterday_utc',
+        },
+      }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
+
+    const receptionScan = await scanReceptions(officeIds, variantIds, startDate, endDate, maxReceptionDetails, maxReceptionPages, true);
+    receptionScan.stats.lookup_windows = [Math.max(1, Math.trunc(lookbackDays || 365))];
+    const lastReception = receptionScan.receptions[0] ?? null;
+
+    if (!lastReception) {
+      return new Response(JSON.stringify({
+        found: true, sell_through_found: false, function_version: FUNCTION_VERSION, analysis_mode: mode, query, office_ids: officeIds,
         variant_ids: sortedIds(variantIds), start_date: startDate, end_date: endDate, data_policy: 'closed_through_yesterday_utc',
-        stock_matches: stockMatches, last_reception: null, summary: summary(stockMatches, null, [], []), movements: [],
-        scan_stats: { receptions: receptionResult.stats, documents: null, consumptions: null },
-        diagnostic: { phase: 'reception_scan', lookup_windows_used: receptionResult.stats.lookup_windows, reception_order_strategy: receptionResult.stats.assumed_reception_order, document_scan_start: null, consumption_scan_start: null, data_policy: 'closed_through_yesterday_utc' },
+        stock_matches: stockMatches, last_reception: null, summary: summary(stockMatches, 0, [], []), movements: [],
+        scan_stats: { receptions: receptionScan.stats, documents: null, consumptions: null },
+        diagnostic: { phase: 'reception_scan', analysis_mode: mode, lookup_windows_used: receptionScan.stats.lookup_windows, reception_order_strategy: receptionScan.stats.assumed_reception_order, document_scan_start: null, consumption_scan_start: null, data_policy: 'closed_through_yesterday_utc' },
         message: 'SKU encontrado, pero no se encontró recepción dentro del rango consultado hasta ayer.',
       }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const scanStartDate = receptionResult.last_reception.date;
+    const scanStartDate = lastReception.date;
     const docResult = await scanDocuments(officeIds, variantIds, scanStartDate, endDate);
     const consumptionResult = await scanConsumptions(officeIds, variantIds, scanStartDate, endDate, maxConsumptionPages, maxConsumptionDetails);
-    const movements = [receptionResult.last_reception.movement, ...docResult.movements, ...consumptionResult.movements].sort((a, b) => {
-      const dateCompare = String(b.movement_date).localeCompare(String(a.movement_date));
-      return dateCompare || String(b.source).localeCompare(String(a.source));
-    });
+    const movements = sortMovements([lastReception.movement, ...docResult.movements, ...consumptionResult.movements]);
 
     return new Response(JSON.stringify({
-      found: true, sell_through_found: true, function_version: FUNCTION_VERSION, query, office_ids: officeIds,
+      found: true, sell_through_found: true, function_version: FUNCTION_VERSION, analysis_mode: mode, query, office_ids: officeIds,
       variant_ids: sortedIds(variantIds), start_date: startDate, scan_start_date: scanStartDate, end_date: endDate,
-      data_policy: 'closed_through_yesterday_utc', stock_matches: stockMatches, last_reception: receptionResult.last_reception.movement,
-      summary: summary(stockMatches, receptionResult.last_reception, docResult.movements, consumptionResult.movements), movements,
-      scan_stats: { receptions: receptionResult.stats, documents: docResult.stats, consumptions: consumptionResult.stats },
+      data_policy: 'closed_through_yesterday_utc', stock_matches: stockMatches, last_reception: lastReception.movement,
+      period_receptions: [lastReception.movement],
+      summary: summary(stockMatches, lastReception.quantity, docResult.movements, consumptionResult.movements), movements,
+      scan_stats: { receptions: receptionScan.stats, documents: docResult.stats, consumptions: consumptionResult.stats },
       diagnostic: {
-        phase: 'complete', lookup_windows_used: receptionResult.stats.lookup_windows, reception_order_strategy: receptionResult.stats.assumed_reception_order,
-        last_reception_date: receptionResult.last_reception.date, document_scan_start: scanStartDate, document_scan_source: docResult.stats.source,
+        phase: 'complete', analysis_mode: mode, lookup_windows_used: receptionScan.stats.lookup_windows, reception_order_strategy: receptionScan.stats.assumed_reception_order,
+        last_reception_date: lastReception.date, document_scan_start: scanStartDate, document_scan_source: docResult.stats.source,
         consumption_scan_start: scanStartDate, data_policy: 'closed_through_yesterday_utc',
       },
     }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
