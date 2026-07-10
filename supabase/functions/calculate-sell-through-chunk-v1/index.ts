@@ -1,5 +1,5 @@
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
-const FUNCTION_VERSION = 'v1.0-chunk-worker';
+const FUNCTION_VERSION = 'v1.1-chunk-worker';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -565,7 +565,13 @@ async function scanConsumptions(officeIds: number[], variantIds: Set<number>, st
   return { movements, stats };
 }
 
-function summary(stockMatches: Row[], received: number, docMovements: Row[], consumptionMovements: Row[]) {
+function summary(
+  stockMatches: Row[],
+  receivedPeriod: number,
+  docMovements: Row[],
+  consumptionMovements: Row[],
+  receivedLastReception = receivedPeriod,
+) {
   const sold = docMovements.filter((x) => x.movement_group === 'VENTA').reduce((sum, x) => sum + n(x.quantity), 0);
   const returned = docMovements.filter((x) => x.movement_group === 'DEVOLUCION').reduce((sum, x) => sum + n(x.quantity), 0);
   const consumed = consumptionMovements.reduce((sum, x) => sum + n(x.quantity), 0);
@@ -574,10 +580,12 @@ function summary(stockMatches: Row[], received: number, docMovements: Row[], con
   const stockOutflow = netSold + consumedStock;
   const stockActual = stockMatches.reduce((sum, x) => sum + n(x.quantity), 0);
   const stockDisponible = stockMatches.reduce((sum, x) => sum + n(x.quantity_available), 0);
-  const outflowExceedsReception = received > 0 && stockOutflow > received;
+  const outflowExceedsReception =
+    receivedPeriod > 0 && stockOutflow > receivedPeriod;
+
   return {
-    piezas_recibidas_ultima_recepcion: received,
-    piezas_recibidas_periodo: received,
+    piezas_recibidas_ultima_recepcion: receivedLastReception,
+    piezas_recibidas_periodo: receivedPeriod,
     piezas_vendidas_desde_ultima_recepcion: sold,
     piezas_devueltas_desde_ultima_recepcion: returned,
     piezas_netas_venta_desde_ultima_recepcion: netSold,
@@ -587,10 +595,16 @@ function summary(stockMatches: Row[], received: number, docMovements: Row[], con
     piezas_salidas_stock_desde_ultima_recepcion: stockOutflow,
     stock_actual: stockActual,
     stock_disponible: stockDisponible,
-    sell_through_pct: received > 0 ? Math.round((netSold / received) * 10000) / 100 : null,
-    salidas_vs_recepcion_pct: received > 0 ? Math.round((stockOutflow / received) * 10000) / 100 : null,
+    sell_through_pct: receivedPeriod > 0
+      ? Math.round((netSold / receivedPeriod) * 10000) / 100
+      : null,
+    salidas_vs_recepcion_pct: receivedPeriod > 0
+      ? Math.round((stockOutflow / receivedPeriod) * 10000) / 100
+      : null,
     advertencia_salidas_superan_ultima_recepcion: outflowExceedsReception,
-    nota_trazabilidad: outflowExceedsReception ? 'Las salidas de stock superan las entradas del rango analizado; no se puede atribuir todo a ese lote/periodo sin una regla FIFO explícita.' : null,
+    nota_trazabilidad: outflowExceedsReception
+      ? 'Las salidas de stock superan las entradas del rango analizado; no se puede atribuir todo a ese lote/periodo sin una regla FIFO explícita.'
+      : null,
   };
 }
 
@@ -811,6 +825,7 @@ Deno.serve(async (req) => {
       );
       const receptionMovements = receptionScan.receptions.map((item) => item.movement);
       const received = receptionScan.receptions.reduce((sum, item) => sum + n(item.quantity), 0);
+      const lastReceived = receptionScan.receptions[0]?.quantity ?? 0;
       const sortStartedAt = performance.now();
 
       const movements = sortMovements([
@@ -833,7 +848,14 @@ Deno.serve(async (req) => {
         data_policy: 'closed_through_yesterday_utc', stock_matches: stockMatches,
         last_reception: receptionScan.receptions[0]?.movement ?? null,
         period_receptions: receptionMovements,
-        summary: summary(stockMatches, received, docResult.movements, consumptionResult.movements), movements,
+        summary: summary(
+          stockMatches,
+          received,
+          docResult.movements,
+          consumptionResult.movements,
+          lastReceived,
+        ),
+        movements,
         scan_stats: {
           receptions: receptionScan.stats,
           documents: docResult.stats,
