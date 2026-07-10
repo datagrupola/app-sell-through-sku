@@ -1,0 +1,77 @@
+name: Run Sell-Through Chunks
+
+on:
+  workflow_dispatch:
+    inputs:
+      query:
+        description: SKU o código de barras
+        required: true
+        type: string
+
+      office_id:
+        description: Sucursal Bsale
+        required: true
+        type: choice
+        options:
+          - "2"
+          - "3"
+          - "4"
+
+      start_date:
+        description: Fecha inicial YYYY-MM-DD
+        required: true
+        type: string
+
+      end_date:
+        description: Fecha final YYYY-MM-DD
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run-sell-through:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      SUPABASE_URL: ${{ secrets.PUBLIC_SUPABASE_URL }}
+      SUPABASE_FUNCTION_KEY: ${{ secrets.PUBLIC_SUPABASE_ANON_KEY }}
+      OUTPUT_PATH: artifacts/sell-through/chunk-results.json
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run sequential chunks
+        env:
+          QUERY: ${{ inputs.query }}
+          OFFICE_ID: ${{ inputs.office_id }}
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+        run: |
+          python3 scripts/run_sell_through_chunks.py \
+            --query "$QUERY" \
+            --office-id "$OFFICE_ID" \
+            --start-date "$START_DATE" \
+            --end-date "$END_DATE" \
+            --chunk-days 30 \
+            --pause-seconds 10 \
+            --timeout-seconds 150 \
+            --max-attempts 4 \
+            --output "$OUTPUT_PATH"
+
+      - name: Upload chunk results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sell-through-results-${{ github.run_id }}
+          path: artifacts/sell-through/
+          if-no-files-found: warn
+          retention-days: 14
