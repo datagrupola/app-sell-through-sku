@@ -61,7 +61,7 @@ jobs:
             --office-id "$OFFICE_ID" \
             --start-date "$START_DATE" \
             --end-date "$END_DATE" \
-            --chunk-days 30 \
+            --chunk-days 10 \
             --pause-seconds 10 \
             --timeout-seconds 150 \
             --max-attempts 4 \
