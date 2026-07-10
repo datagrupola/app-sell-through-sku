@@ -135,7 +135,6 @@ def document_row(doc: Dict[str, Any], office_id: int, document_type_id: int) -> 
         "state": to_int_or_none(doc.get("state")),
         "total_amount": to_float_or_none(doc.get("totalAmount")),
         "net_amount": to_float_or_none(doc.get("netAmount")),
-        "raw_json": doc,
         "synced_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -169,7 +168,6 @@ def document_detail_row(
         "total_amount": amount,
         "total_amount_signed": amount * sign,
         "unit_value": to_float_or_none(detail.get("totalUnitValue")),
-        "raw_json": detail,
         "synced_at": datetime.now(timezone.utc).isoformat(),
     }
 
