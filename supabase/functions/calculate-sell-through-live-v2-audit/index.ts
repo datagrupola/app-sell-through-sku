@@ -278,7 +278,7 @@ function buildReception(reception: Row, officeId: number, date: string, receptio
 
 async function scanReceptions(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string, maxDetails: number, maxPages: number, stopAfterFirstMatch: boolean) {
   const receptionsFound: ReceptionResult[] = [];
-  const stats = { pages: 0, count_requests: 0, receptions_seen: 0, details_seen: 0, matches: 0, lookup_windows: [] as number[], stopped_after_first_match: false, assumed_reception_order: 'oldest_first_reverse_scan', start_offsets: [] as Row[], detail_errors: [] as Row[] };
+  const stats = { pages: 0, count_requests: 0, receptions_seen: 0, details_seen: 0, detail_requests: 0, matches: 0, lookup_windows: [] as number[], stopped_after_first_match: false, assumed_reception_order: 'oldest_first_reverse_scan', start_offsets: [] as Row[], detail_errors: [] as Row[] };
 
   for (const officeId of officeIds) {
     const countPage = await bsale('stocks/receptions.json', { officeid: officeId, expand: '[office]', limit: 1, offset: 0 });
@@ -307,7 +307,12 @@ async function scanReceptions(officeIds: number[], variantIds: Set<number>, star
         const receptionId = n(reception.id);
         let dets: Row[] = [];
         try {
-          dets = (await details(`stocks/receptions/${receptionId}/details.json`, maxDetails)).items;
+          const result = await details(
+            `stocks/receptions/${receptionId}/details.json`,
+            maxDetails,
+          );
+          dets = result.items;
+          stats.detail_requests += result.requests;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           if (msg.includes('Bsale API error 403')) {
