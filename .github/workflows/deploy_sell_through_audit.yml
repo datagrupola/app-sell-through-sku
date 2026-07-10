@@ -1,0 +1,29 @@
+name: Deploy Sell-Through Audit Function
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-audit:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: lztornyogibsaswcviss
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy audit function
+        run: |
+          supabase functions deploy calculate-sell-through-live-v2-audit \
+            --project-ref "$SUPABASE_PROJECT_REF"
