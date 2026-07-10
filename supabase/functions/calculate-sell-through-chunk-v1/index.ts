@@ -1,5 +1,5 @@
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? 'https://lztornyogibsaswcviss.supabase.co';
-const FUNCTION_VERSION = 'v1.1-chunk-worker';
+const FUNCTION_VERSION = 'v1.2-chunk-worker';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -95,14 +95,87 @@ async function sb(table: string, params: Record<string, string>) {
   return res.json();
 }
 
-async function bsale(path: string, params: Record<string, string | number> = {}) {
+const BSALE_MAX_ATTEMPTS = 4;
+const BSALE_BASE_DELAY_MS = 750;
+const BSALE_REQUEST_DELAY_MS = 150;
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function bsale(
+  path: string,
+  params: Record<string, string | number> = {},
+) {
   const token = Deno.env.get('BSALE_ACCESS_TOKEN');
-  if (!token) throw new Error('Missing BSALE_ACCESS_TOKEN secret');
+
+  if (!token) {
+    throw new Error('Missing BSALE_ACCESS_TOKEN secret');
+  }
+
   const url = new URL(`https://api.bsale.com.mx/v1/${path}`);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
-  const res = await fetch(url, { headers: { access_token: token, 'Content-Type': 'application/json' } });
-  if (!res.ok) throw new Error(`Bsale API error ${res.status}: ${(await res.text()).slice(0, 500)} | url=${url.toString()}`);
-  return res.json();
+
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value));
+  });
+
+  for (let attempt = 1; attempt <= BSALE_MAX_ATTEMPTS; attempt += 1) {
+    const response = await fetch(url, {
+      headers: {
+        access_token: token,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+
+      // Evita ráfagas sostenidas contra la API de Bsale.
+      await sleep(BSALE_REQUEST_DELAY_MS);
+
+      return result;
+    }
+
+    const responseBody = (await response.text()).slice(0, 500);
+
+    const retryable =
+      response.status === 403
+      || response.status === 429
+      || response.status >= 500;
+
+    if (!retryable || attempt === BSALE_MAX_ATTEMPTS) {
+      throw new Error(
+        `Bsale API error ${response.status}: `
+        + `${responseBody} | url=${url.toString()}`
+      );
+    }
+
+    const retryAfterHeader = Number(
+      response.headers.get('retry-after'),
+    );
+
+    const delayMilliseconds =
+      Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+        ? retryAfterHeader * 1000
+        : (
+          BSALE_BASE_DELAY_MS * (2 ** (attempt - 1))
+          + Math.floor(Math.random() * 250)
+        );
+
+    console.warn(JSON.stringify({
+      event: 'bsale_retry',
+      status: response.status,
+      attempt,
+      max_attempts: BSALE_MAX_ATTEMPTS,
+      delay_ms: delayMilliseconds,
+      url: url.toString(),
+    }));
+
+    await sleep(delayMilliseconds);
+  }
+
+  throw new Error(
+    `No fue posible completar la solicitud Bsale: ${url.toString()}`
+  );
 }
 
 async function findStockRows(query: string, officeIds: number[]) {
