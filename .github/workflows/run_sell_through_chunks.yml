@@ -74,6 +74,13 @@ jobs:
             --input "$OUTPUT_PATH" \
             --output "$CONSOLIDATED_OUTPUT_PATH"
 
+      - name: Cache consolidated result
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          python3 scripts/persist_sell_through_cache.py \
+            --input "$CONSOLIDATED_OUTPUT_PATH"
+
       - name: Upload chunk results
         if: always()
         uses: actions/upload-artifact@v4
