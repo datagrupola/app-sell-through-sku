@@ -50,6 +50,6 @@ jobs:
         run: |
           supabase functions deploy calculate-sell-through-live-v2 --project-ref "$SUPABASE_PROJECT_REF"
       
-      - name: Deploy calculate-sell-through-live-v2
+      - name: Deploy calculate-sell-through-live-v2-audit
         run: |
-          supabase functions deploy calculate-sell-through-live-v2 --project-ref "$SUPABASE_PROJECT_REF"
+          supabase functions deploy calculate-sell-through-live-v2-audit --project-ref "$SUPABASE_PROJECT_REF"
