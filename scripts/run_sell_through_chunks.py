@@ -123,10 +123,29 @@ def post_json(
 
 def validate_chunk_response(
     response: dict[str, Any],
+    query: str,
     office_id: int,
     chunk: dict[str, Any],
 ) -> None:
+    returned_query = str(response.get("query") or "").strip()
     returned_offices = response.get("office_ids")
+
+    if returned_query != query:
+        raise RuntimeError(
+            "La respuesta no corresponde al SKU solicitado: "
+            f"solicitado={query!r}, recibido={returned_query!r}"
+        )
+
+    if response.get("found") is not True:
+        message = str(
+            response.get("message")
+            or response.get("error")
+            or "Sin detalle adicional."
+        )
+
+        raise RuntimeError(
+            f"El SKU {query!r} no fue encontrado. {message}"
+        )
 
     if returned_offices != [office_id]:
         raise RuntimeError(
@@ -266,6 +285,7 @@ def main() -> None:
 
         validate_chunk_response(
             response,
+            query,
             args.office_id,
             chunk,
         )
