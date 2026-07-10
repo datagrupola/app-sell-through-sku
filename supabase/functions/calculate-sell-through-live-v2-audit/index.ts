@@ -279,12 +279,12 @@ function buildReception(reception: Row, officeId: number, date: string, receptio
 async function scanReceptions(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string, maxDetails: number, maxPages: number, stopAfterFirstMatch: boolean) {
   const receptionsFound: ReceptionResult[] = [];
   const stats = { pages: 0, count_requests: 0, receptions_seen: 0, details_seen: 0, detail_requests: 0, matches: 0, lookup_windows: [] as number[], stopped_after_first_match: false, assumed_reception_order: 'oldest_first_reverse_scan', start_offsets: [] as Row[], detail_errors: [] as Row[] };
-  const admissionDateRange = `[${unixUtc(startDate)},${unixUtc(endDate, true)}]`;
+  const admissionDate = unixUtc(endDate);
 
   for (const officeId of officeIds) {
     const countPage = await bsale('stocks/receptions.json', {
       officeid: officeId,
-      admissiondaterange: admissionDateRange,
+      admissiondate: admissionDate,
       expand: '[office]',
       limit: 1,
       offset: 0,
@@ -304,7 +304,7 @@ async function scanReceptions(officeIds: number[], variantIds: Set<number>, star
       if (maxPages > 0 && pages >= maxPages) break;
       const page = await bsale('stocks/receptions.json', {
         officeid: officeId,
-        admissiondaterange: admissionDateRange,
+        admissiondate: admissionDate,
         expand: '[office]',
         limit: RECEPTION_LIMIT,
         offset,
