@@ -276,88 +276,186 @@ function buildReception(reception: Row, officeId: number, date: string, receptio
   };
 }
 
-async function scanReceptions(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string, maxDetails: number, maxPages: number, stopAfterFirstMatch: boolean) {
+async function scanReceptions(
+  officeIds: number[],
+  variantIds: Set<number>,
+  startDate: string,
+  endDate: string,
+  maxDetails: number,
+  maxPages: number,
+  stopAfterFirstMatch: boolean,
+) {
   const receptionsFound: ReceptionResult[] = [];
-  const stats = { pages: 0, count_requests: 0, receptions_seen: 0, details_seen: 0, detail_requests: 0, matches: 0, lookup_windows: [] as number[], stopped_after_first_match: false, assumed_reception_order: 'oldest_first_reverse_scan', start_offsets: [] as Row[], detail_errors: [] as Row[] };
-  const admissionDate = unixUtc(endDate);
+
+  const stats = {
+    pages: 0,
+    count_requests: 0,
+    date_queries: 0,
+    receptions_seen: 0,
+    details_seen: 0,
+    detail_requests: 0,
+    matches: 0,
+    lookup_windows: [] as number[],
+    stopped_after_first_match: false,
+    assumed_reception_order: 'admissiondate_daily_descending',
+    start_offsets: [] as Row[],
+    detail_errors: [] as Row[],
+  };
 
   for (const officeId of officeIds) {
-    const countPage = await bsale('stocks/receptions.json', {
-      officeid: officeId,
-      admissiondate: admissionDate,
-      expand: '[office]',
-      limit: 1,
-      offset: 0,
-    });
-    stats.count_requests += 1;
-    const count = n(countPage.count);
-    if (!count) continue;
-    let offset = Math.max(
-      0,
-      Math.floor((count - 1) / RECEPTION_LIMIT) * RECEPTION_LIMIT,
-    );
-    let pages = 0;
+    let pagesForOffice = 0;
     let stopOffice = false;
-    stats.start_offsets.push({ office_id: officeId, count, start_offset: offset });
+    const cursor = new Date(`${endDate}T00:00:00Z`);
 
-    while (offset >= 0 && !stopOffice) {
-      if (maxPages > 0 && pages >= maxPages) break;
-      const page = await bsale('stocks/receptions.json', {
-        officeid: officeId,
-        admissiondate: admissionDate,
-        expand: '[office]',
-        limit: RECEPTION_LIMIT,
-        offset,
-      });
-      const receptions = ((page.items ?? []) as Row[]).slice().reverse();
-      stats.pages += 1;
-      pages += 1;
-      if (!receptions.length) break;
+    while (
+      cursor.toISOString().slice(0, 10) >= startDate
+      && !stopOffice
+    ) {
+      if (maxPages > 0 && pagesForOffice >= maxPages) break;
 
-      for (const reception of receptions) {
-        stats.receptions_seen += 1;
-        const date = ymd(reception.admissionDate);
-        if (date && date > endDate) continue;
-        if (date && date < startDate) { stopOffice = true; break; }
-        if (!date || date < startDate || date > endDate) continue;
-        const receptionId = n(reception.id);
-        let dets: Row[] = [];
-        try {
-          const result = await details(
-            `stocks/receptions/${receptionId}/details.json`,
-            maxDetails,
-          );
-          dets = result.items;
-          stats.detail_requests += result.requests;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('Bsale API error 403')) {
-            stats.detail_errors.push({ reception_id: receptionId, message: msg.slice(0, 220) });
-            continue;
-          }
-          throw err;
-        }
-        const matches: Array<{ detail: Row; variantId: number }> = [];
-        for (const detail of dets) {
-          stats.details_seen += 1;
-          const variantId = i((detail.variant as Row | undefined)?.id);
-          if (variantId !== null && variantIds.has(variantId)) matches.push({ detail, variantId });
-        }
-        if (!matches.length) continue;
-        stats.matches += matches.length;
-        receptionsFound.push(buildReception(reception, officeId, date, receptionId, matches));
-        if (stopAfterFirstMatch) {
-          stats.stopped_after_first_match = true;
+      const day = cursor.toISOString().slice(0, 10);
+      const admissionDate = unixUtc(day);
+
+      let offset = 0;
+      let matchedOnDay = false;
+      let firstPage = true;
+
+      while (!stopOffice) {
+        if (maxPages > 0 && pagesForOffice >= maxPages) {
           stopOffice = true;
           break;
         }
+
+        const page = await bsale('stocks/receptions.json', {
+          officeid: officeId,
+          admissiondate: admissionDate,
+          expand: '[office]',
+          limit: RECEPTION_LIMIT,
+          offset,
+        });
+
+        stats.pages += 1;
+        pagesForOffice += 1;
+
+        if (firstPage) {
+          stats.count_requests += 1;
+          stats.date_queries += 1;
+
+          stats.start_offsets.push({
+            office_id: officeId,
+            admission_date: day,
+            count: n(page.count),
+            start_offset: 0,
+          });
+
+          firstPage = false;
+        }
+
+        const receptions = (page.items ?? []) as Row[];
+
+        if (!receptions.length) break;
+
+        for (const reception of receptions) {
+          stats.receptions_seen += 1;
+
+          const date = ymd(reception.admissionDate);
+          if (date !== day) continue;
+
+          const receptionId = n(reception.id);
+          let dets: Row[] = [];
+
+          try {
+            const result = await details(
+              `stocks/receptions/${receptionId}/details.json`,
+              maxDetails,
+            );
+
+            dets = result.items;
+            stats.detail_requests += result.requests;
+          } catch (err) {
+            const message = err instanceof Error
+              ? err.message
+              : String(err);
+
+            if (message.includes('Bsale API error 403')) {
+              stats.detail_errors.push({
+                reception_id: receptionId,
+                admission_date: day,
+                message: message.slice(0, 220),
+              });
+
+              continue;
+            }
+
+            throw err;
+          }
+
+          const matches: Array<{
+            detail: Row;
+            variantId: number;
+          }> = [];
+
+          for (const detail of dets) {
+            stats.details_seen += 1;
+
+            const variantId = i(
+              (detail.variant as Row | undefined)?.id,
+            );
+
+            if (
+              variantId !== null
+              && variantIds.has(variantId)
+            ) {
+              matches.push({ detail, variantId });
+            }
+          }
+
+          if (!matches.length) continue;
+
+          stats.matches += matches.length;
+          matchedOnDay = true;
+
+          receptionsFound.push(
+            buildReception(
+              reception,
+              officeId,
+              day,
+              receptionId,
+              matches,
+            ),
+          );
+        }
+
+        offset += RECEPTION_LIMIT;
+
+        if (
+          offset >= n(page.count)
+          || receptions.length < RECEPTION_LIMIT
+        ) {
+          break;
+        }
       }
-      offset -= RECEPTION_LIMIT;
+
+      if (stopAfterFirstMatch && matchedOnDay) {
+        stats.stopped_after_first_match = true;
+        stopOffice = true;
+        break;
+      }
+
+      cursor.setUTCDate(cursor.getUTCDate() - 1);
     }
   }
 
-  receptionsFound.sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.reception_id - a.reception_id);
-  return { receptions: receptionsFound, stats };
+  receptionsFound.sort(
+    (a, b) =>
+      String(b.date).localeCompare(String(a.date))
+      || b.reception_id - a.reception_id,
+  );
+
+  return {
+    receptions: receptionsFound,
+    stats,
+  };
 }
 
 async function scanDocuments(officeIds: number[], variantIds: Set<number>, startDate: string, endDate: string) {
