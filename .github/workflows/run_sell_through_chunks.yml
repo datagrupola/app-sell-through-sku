@@ -39,6 +39,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.PUBLIC_SUPABASE_URL }}
       SUPABASE_FUNCTION_KEY: ${{ secrets.PUBLIC_SUPABASE_ANON_KEY }}
       OUTPUT_PATH: artifacts/sell-through/chunk-results.json
+      CONSOLIDATED_OUTPUT_PATH: artifacts/sell-through/consolidated-result.json
 
     steps:
       - name: Checkout repository
@@ -66,6 +67,12 @@ jobs:
             --timeout-seconds 150 \
             --max-attempts 4 \
             --output "$OUTPUT_PATH"
+
+      - name: Consolidate chunk results
+        run: |
+          python3 scripts/consolidate_sell_through_chunks.py \
+            --input "$OUTPUT_PATH" \
+            --output "$CONSOLIDATED_OUTPUT_PATH"
 
       - name: Upload chunk results
         if: always()
