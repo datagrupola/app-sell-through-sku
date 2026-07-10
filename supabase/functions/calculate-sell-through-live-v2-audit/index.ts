@@ -285,7 +285,10 @@ async function scanReceptions(officeIds: number[], variantIds: Set<number>, star
     stats.count_requests += 1;
     const count = n(countPage.count);
     if (!count) continue;
-    let offset = Math.max(0, count - RECEPTION_LIMIT);
+    let offset = Math.max(
+      0,
+      Math.floor((count - 1) / RECEPTION_LIMIT) * RECEPTION_LIMIT,
+    );
     let pages = 0;
     let stopOffice = false;
     stats.start_offsets.push({ office_id: officeId, count, start_offset: offset });
