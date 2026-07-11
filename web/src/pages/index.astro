@@ -54,6 +54,25 @@
       const ymd = () => new Date().toISOString().slice(0, 10);
       const yesterday = () => { const d = new Date(); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); };
       const daysAgo = (days) => { const d = new Date(); d.setUTCDate(d.getUTCDate() - days); return d.toISOString().slice(0, 10); };
+      const daysSinceDate = (value) => {
+        if (!value) return null;
+
+        const receptionDate = Date.parse(`${value}T00:00:00Z`);
+
+        if (!Number.isFinite(receptionDate)) return null;
+
+        const now = new Date();
+        const todayUtc = Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+        );
+
+        return Math.max(
+          0,
+          Math.floor((todayUtc - receptionDate) / 86_400_000),
+        );
+      };
       const setStatus = (message) => { status.textContent = message; };
       const showPdf = (value) => { pdfButton.hidden = !value; };
       const fileSafe = (v) => String(v || 'sku').trim().replace(/[^a-z0-9-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').toLowerCase();
@@ -105,6 +124,15 @@
         const stock = data.stock_matches?.[0] || {};
         const summary = data.summary || {};
         const reception = data.last_reception || {};
+        const daysSinceLastReception = daysSinceDate(
+          reception.movement_date,
+        );
+
+        const receptionAgeDanger =
+          daysSinceLastReception !== null &&
+          daysSinceLastReception > 35 &&
+          num(summary.sell_through_pct) < 100;
+
         const stats = data.scan_stats || {};
         const movements = data.movements || [];
         const timeline = groupByDay(movements);
@@ -116,7 +144,43 @@
         const context = isPeriod
           ? `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Periodo analizado</p><h2>${esc(data.start_date)} a ${esc(data.end_date)}</h2></div><span class="badge neutral">Periodo</span></div><dl class="detail-grid"><div><dt>Fecha inicial</dt><dd>${esc(data.start_date)}</dd></div><div><dt>Fecha final</dt><dd>${esc(data.end_date)}</dd></div><div><dt>Recepciones</dt><dd>${fmt(data.period_receptions?.length || 0)}</dd></div><div><dt>Piezas recibidas</dt><dd>${fmt(summary.piezas_recibidas_periodo ?? summary.piezas_recibidas_ultima_recepcion)}</dd></div><div><dt>Vendidas netas</dt><dd>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</dd></div><div><dt>Ajustes stock</dt><dd>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</dd></div></dl></section>`
           : `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Última recepción</p><h2>Recepción ${esc(reception.reception_id)}</h2></div><span class="badge neutral">${esc(reception.movement_type)}</span></div><dl class="detail-grid"><div><dt>Fecha</dt><dd>${esc(reception.movement_date)}</dd></div><div><dt>Piezas</dt><dd>${fmt(reception.quantity)}</dd></div><div><dt>Costo</dt><dd>${money(reception.cost)}</dd></div><div><dt>Stock al recibir</dt><dd>${fmt(reception.variant_stock)}</dd></div><div><dt>Documento</dt><dd>${esc(reception.document_number)}</dd></div><div><dt>Despacho interno</dt><dd>${esc(reception.internal_dispatch_id)}</dd></div><div class="wide"><dt>Nota</dt><dd>${esc(reception.note)}</dd></div></dl></section>`;
-        result.innerHTML = `${warning}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Resultado live · ${esc(modeTitle)}</p><h2>${esc(stock.sku || data.query)}</h2></div><span class="badge success">${esc(data.function_version)}</span></div><div class="result-layout"><article class="sellthrough-panel"><div class="gauge" style="--value:${Math.max(0, Math.min(100, num(summary.sell_through_pct)))};"><div class="gauge-inner"><strong>${pct(summary.sell_through_pct)}</strong><span>venta</span></div></div><div><p class="metric-label">Sell-through por venta</p><p class="metric-help">${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} piezas netas vendidas de ${fmt(summary.piezas_recibidas_ultima_recepcion)} recibidas.</p></div></article><div class="summary-grid compact"><article class="card"><span>Recibidas</span><strong>${fmt(summary.piezas_recibidas_ultima_recepcion)}</strong><small>${receivedNote}</small></article><article class="card"><span>Vendidas netas</span><strong>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong><small>Vendidas: ${fmt(summary.piezas_vendidas_desde_ultima_recepcion)} · Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}</small></article><article class="card"><span>Consumo / ajuste</span><strong>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</strong><small>Salidas no venta que afectaron stock</small></article><article class="card"><span>Salidas stock</span><strong>${fmt(summary.piezas_salidas_stock_desde_ultima_recepcion)}</strong><small>${pct(summary.salidas_vs_recepcion_pct)} de entradas</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Sucursal</span><strong>${esc(stock.office_name)}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></div><p class="muted block-note">Movimientos calculados hasta ${esc(data.end_date)}. El stock actual es live de Bsale.</p></section>${context}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Movimientos por día</p><h2>Recepciones, ventas, devoluciones y ajustes</h2></div><span class="badge neutral">${fmt(timeline.length)} días</span></div><div class="timeline">${timelineHtml || '<p class="muted">Sin movimientos.</p>'}</div></section><section class="section-card muted-card"><div class="section-header"><div><p class="section-kicker">Cobertura revisada</p><h2>Qué leyó la función en Bsale</h2></div><span class="badge neutral">Diagnóstico</span></div><div class="coverage-grid"><article class="coverage-item"><span>Rango</span><strong>${esc(data.scan_start_date || data.start_date)} a ${esc(data.end_date)}</strong><p>Modo: ${esc(modeTitle)}</p></article><article class="coverage-item"><span>Recepciones revisadas</span><strong>${fmt(stats.receptions?.receptions_seen)}</strong><p>Coincidencias: ${fmt(stats.receptions?.matches)}</p></article><article class="coverage-item"><span>Documentos revisados</span><strong>${fmt(stats.documents?.documents_seen)}</strong><p>Líneas: ${fmt(stats.documents?.details_seen)} · matches: ${fmt(stats.documents?.matches)}</p></article><article class="coverage-item"><span>Consumos revisados</span><strong>${fmt(stats.consumptions?.consumptions_seen_in_date_range)}</strong><p>Líneas: ${fmt(stats.consumptions?.details_seen)} · matches: ${fmt(stats.consumptions?.matches)}</p></article><article class="coverage-item"><span>Política</span><strong>Hasta ayer</strong><p>${esc(data.data_policy)}</p></article><article class="coverage-item"><span>Errores API</span><strong>${fmt((stats.receptions?.detail_errors || []).length + (stats.documents?.detail_errors || []).length + (stats.consumptions?.detail_errors || []).length)}</strong><p>Errores acumulados.</p></article></div></section><section class="section-card"><div class="section-header"><div><p class="section-kicker">Detalle</p><h2>Movimientos detectados</h2></div><span class="badge neutral">${fmt(movements.length)} movimientos</span></div><div class="movement-list">${movementsHtml || '<p class="muted">Sin movimientos.</p>'}</div></section>`;
+        result.innerHTML = `${warning}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Resultado live · ${esc(modeTitle)}</p><h2>${esc(stock.sku || data.query)}</h2></div><span class="badge success">${esc(data.function_version)}</span></div><div class="result-layout"><div class="hero-metrics"><article class="sellthrough-panel"><div class="gauge" style="--value:${Math.max(0, Math.min(100, num(summary.sell_through_pct)))};"><div class="gauge-inner"><strong>${pct(summary.sell_through_pct)}</strong><span>venta</span></div></div><div><p class="metric-label">Sell-through por venta</p><p class="metric-help">${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} piezas netas vendidas de ${fmt(summary.piezas_recibidas_ultima_recepcion)} recibidas.</p></div>
+</article>
+
+<article class="reception-age-panel ${
+  receptionAgeDanger ? 'danger' : ''
+}" >
+  <div>
+    <p class="metric-label">
+      Días desde última recepción
+    </p>
+
+    <strong class="reception-age-value">
+      ${
+        daysSinceLastReception === null
+          ? '—'
+          : fmt(daysSinceLastReception)
+      }
+    </strong>
+
+    <p class="metric-help">
+      ${
+        daysSinceLastReception === null
+          ? 'Fecha de recepción no disponible.'
+          : receptionAgeDanger
+            ? `Última recepción: ${esc(
+                reception.movement_date,
+              )} · Más de 35 días`
+            : `Última recepción: ${esc(
+                reception.movement_date,
+              )}`
+      }
+    </p>
+  </div>
+</article>
+</div>
+
+<div class="summary-grid compact"><article class="card"><span>Recibidas</span><strong>${fmt(summary.piezas_recibidas_ultima_recepcion)}</strong><small>${receivedNote}</small></article><article class="card"><span>Vendidas netas</span><strong>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong><small>Vendidas: ${fmt(summary.piezas_vendidas_desde_ultima_recepcion)} · Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}</small></article><article class="card"><span>Consumo / ajuste</span><strong>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</strong><small>Salidas no venta que afectaron stock</small></article><article class="card"><span>Salidas stock</span><strong>${fmt(summary.piezas_salidas_stock_desde_ultima_recepcion)}</strong><small>${pct(summary.salidas_vs_recepcion_pct)} de entradas</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Sucursal</span><strong>${esc(stock.office_name)}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></div><p class="muted block-note">Movimientos calculados hasta ${esc(data.end_date)}. El stock actual es live de Bsale.</p></section>${context}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Movimientos por día</p><h2>Recepciones, ventas, devoluciones y ajustes</h2></div><span class="badge neutral">${fmt(timeline.length)} días</span></div><div class="timeline">${timelineHtml || '<p class="muted">Sin movimientos.</p>'}</div></section><section class="section-card muted-card"><div class="section-header"><div><p class="section-kicker">Cobertura revisada</p><h2>Qué leyó la función en Bsale</h2></div><span class="badge neutral">Diagnóstico</span></div><div class="coverage-grid"><article class="coverage-item"><span>Rango</span><strong>${esc(data.scan_start_date || data.start_date)} a ${esc(data.end_date)}</strong><p>Modo: ${esc(modeTitle)}</p></article><article class="coverage-item"><span>Recepciones revisadas</span><strong>${fmt(stats.receptions?.receptions_seen)}</strong><p>Coincidencias: ${fmt(stats.receptions?.matches)}</p></article><article class="coverage-item"><span>Documentos revisados</span><strong>${fmt(stats.documents?.documents_seen)}</strong><p>Líneas: ${fmt(stats.documents?.details_seen)} · matches: ${fmt(stats.documents?.matches)}</p></article><article class="coverage-item"><span>Consumos revisados</span><strong>${fmt(stats.consumptions?.consumptions_seen_in_date_range)}</strong><p>Líneas: ${fmt(stats.consumptions?.details_seen)} · matches: ${fmt(stats.consumptions?.matches)}</p></article><article class="coverage-item"><span>Política</span><strong>Hasta ayer</strong><p>${esc(data.data_policy)}</p></article><article class="coverage-item"><span>Errores API</span><strong>${fmt((stats.receptions?.detail_errors || []).length + (stats.documents?.detail_errors || []).length + (stats.consumptions?.detail_errors || []).length)}</strong><p>Errores acumulados.</p></article></div></section><section class="section-card"><div class="section-header"><div><p class="section-kicker">Detalle</p><h2>Movimientos detectados</h2></div><span class="badge neutral">${fmt(movements.length)} movimientos</span></div><div class="movement-list">${movementsHtml || '<p class="muted">Sin movimientos.</p>'}</div></section>`;
       };
 
       const downloadPdf = async () => {
@@ -444,4 +508,121 @@
   @media (max-width: 1180px) { .search-form, .search-form.period-mode { grid-template-columns: 1fr 1fr; } }
   @media (max-width: 980px) { .page { width: min(100% - 28px, 1220px); padding-top: 22px; } .result-layout, .summary-grid, .summary-grid.compact, .coverage-grid, .detail-grid { grid-template-columns: 1fr; } }
   @media (max-width: 640px) { .page { width: min(100% - 18px, 1220px); } .panel, .section-card { border-radius: 18px; padding: 13px; } .search-form, .search-form.period-mode, .actions-row, .section-header, .sellthrough-panel, .timeline-day, .movement-row { display: grid; grid-template-columns: 1fr; justify-content: stretch; } .movement-qty { min-width: 0; text-align: left; } }
+
+  /* Reception age hero metric */
+  .result-layout {
+    display: block;
+  }
+
+  .hero-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+
+  .sellthrough-panel,
+  
+  .reception-age-panel {
+    min-height: 220px;
+    padding: 30px;
+    border: 0;
+    border-radius: 22px;
+    background: #172033;
+    box-shadow:
+      0 18px 40px rgba(15, 23, 42, 0.18),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .reception-age-panel > div {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .reception-age-panel .metric-label {
+    margin: 0;
+    color: #cbd5e1;
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .reception-age-value {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 116px;
+    height: 116px;
+    margin: 18px auto 16px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+    font-size: clamp(3rem, 6vw, 4.8rem);
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .reception-age-panel .metric-help {
+    max-width: 280px;
+    margin: 0 auto;
+    color: #cbd5e1;
+    font-size: 0.92rem;
+    line-height: 1.45;
+    text-align: center;
+  }
+
+
+  .reception-age-panel.danger {
+    background:
+      radial-gradient(
+        circle at top right,
+        rgba(254, 202, 202, 0.34),
+        transparent 42%
+      ),
+      linear-gradient(
+        145deg,
+        #450a0a 0%,
+        #991b1b 55%,
+        #dc2626 100%
+      );
+    box-shadow:
+      0 18px 40px rgba(220, 38, 38, 0.24),
+      inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  }
+
+  .reception-age-panel.danger .metric-label {
+    color: #fecaca;
+  }
+
+  .reception-age-panel.danger .metric-help {
+    color: #fee2e2;
+  }
+
+  .reception-age-panel.danger .reception-age-value {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.28);
+  }
+
+
+  @media (max-width: 900px) {
+    .hero-metrics {
+      grid-template-columns: 1fr;
+    }
+
+    .sellthrough-panel,
+    .reception-age-panel {
+      min-height: auto;
+    }
+  }
+
 </style>

@@ -15,3 +15,5 @@ dist/
 # Editor
 .vscode/
 web/.vscode/
+
+.DS_Store
