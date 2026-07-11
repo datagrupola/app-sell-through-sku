@@ -243,30 +243,34 @@
           y += 92;
 
           const heroGap = 12;
-          const heroH = 116;
-          const heroW = (contentWidth - heroGap) / 2;
+          const heroH = 94;
+          const sellW = contentWidth * 0.62;
+          const ageW = contentWidth - sellW - heroGap;
 
           pdf.setDrawColor(dark);
           pdf.setFillColor(dark);
           pdf.roundedRect(
             margin,
             y,
-            heroW,
+            sellW,
             heroH,
-            14,
-            14,
+            12,
+            12,
             'FD',
           );
 
-          const gaugeX = margin + 60;
+          const gaugeX = margin + 54;
           const gaugeY = y + heroH / 2;
-          const gaugeRadius = 34;
+          const gaugeRadius = 27;
           const gaugeValue = Math.max(
             0,
-            Math.min(100, num(summary.sell_through_pct)),
+            Math.min(
+              100,
+              num(summary.sell_through_pct),
+            ),
           );
 
-          pdf.setLineWidth(10);
+          pdf.setLineWidth(8);
           pdf.setDrawColor('#475569');
           pdf.circle(
             gaugeX,
@@ -276,176 +280,185 @@
           );
 
           pdf.setDrawColor('#60a5fa');
-          pdf.setLineWidth(10);
 
           const gaugeSteps = Math.max(
             1,
-            Math.round(gaugeValue * 1.2),
+            Math.round(gaugeValue),
           );
 
-          for (let step = 0; step < gaugeSteps; step += 1) {
+          for (
+            let step = 0;
+            step < gaugeSteps;
+            step += 1
+          ) {
             const startAngle =
               -Math.PI / 2 +
-              (step / 120) * Math.PI * 2;
+              (step / 100) * Math.PI * 2;
+
             const endAngle =
               -Math.PI / 2 +
-              ((step + 1) / 120) * Math.PI * 2;
+              ((step + 1) / 100) * Math.PI * 2;
 
             pdf.line(
               gaugeX +
-                Math.cos(startAngle) * gaugeRadius,
+                Math.cos(startAngle) *
+                  gaugeRadius,
               gaugeY +
-                Math.sin(startAngle) * gaugeRadius,
+                Math.sin(startAngle) *
+                  gaugeRadius,
               gaugeX +
-                Math.cos(endAngle) * gaugeRadius,
+                Math.cos(endAngle) *
+                  gaugeRadius,
               gaugeY +
-                Math.sin(endAngle) * gaugeRadius,
+                Math.sin(endAngle) *
+                  gaugeRadius,
             );
           }
 
           pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(18);
+          pdf.setFontSize(17);
           pdf.setTextColor('#ffffff');
           pdf.text(
             pct(summary.sell_through_pct),
             gaugeX,
-            gaugeY + 4,
+            gaugeY + 5,
             { align: 'center' },
           );
 
-          pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(7.5);
-          pdf.setTextColor('#cbd5e1');
-          pdf.text(
-            'venta',
-            gaugeX,
-            gaugeY + 18,
-            { align: 'center' },
-          );
-
-          const sellTextX = margin + 125;
+          const sellTextX = margin + 104;
 
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(8);
-          pdf.setTextColor('#ffffff');
+          pdf.setTextColor('#cbd5e1');
           pdf.text(
             'SELL-THROUGH POR VENTA',
             sellTextX,
-            y + 43,
+            y + 30,
           );
 
-          pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(10);
+          pdf.setFontSize(19);
+          pdf.setTextColor('#ffffff');
+          pdf.text(
+            pct(summary.sell_through_pct),
+            sellTextX,
+            y + 54,
+          );
+
+          pdf.setFont(
+            'helvetica',
+            'normal',
+          );
+          pdf.setFontSize(8.5);
           pdf.setTextColor('#cbd5e1');
           pdf.text(
-            pdf.splitTextToSize(
-              `${fmt(
-                summary.piezas_netas_venta_desde_ultima_recepcion,
-              )} piezas netas vendidas de ${fmt(
-                summary.piezas_recibidas_ultima_recepcion,
-              )} recibidas.`,
-              heroW - 145,
-            ),
+            `${fmt(
+              summary
+                .piezas_netas_venta_desde_ultima_recepcion,
+            )} piezas netas vendidas de ${fmt(
+              summary
+                .piezas_recibidas_ultima_recepcion,
+            )} recibidas`,
             sellTextX,
-            y + 64,
+            y + 72,
+            {
+              maxWidth: sellW - 122,
+            },
           );
 
-          const ageX = margin + heroW + heroGap;
-          const ageFill = receptionAgeDanger
-            ? dangerRed
-            : dark;
+          const ageX =
+            margin + sellW + heroGap;
 
-          pdf.setDrawColor(
-            receptionAgeDanger ? dangerDark : dark,
-          );
+          const ageFill =
+            receptionAgeDanger
+              ? '#fff1f2'
+              : '#f8fafc';
+
+          const ageBorder =
+            receptionAgeDanger
+              ? '#ef4444'
+              : border;
+
+          const ageValueColor =
+            receptionAgeDanger
+              ? '#b91c1c'
+              : dark;
+
+          pdf.setDrawColor(ageBorder);
           pdf.setFillColor(ageFill);
           pdf.roundedRect(
             ageX,
             y,
-            heroW,
+            ageW,
             heroH,
-            14,
-            14,
+            12,
+            12,
             'FD',
           );
 
           pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(8);
+          pdf.setFontSize(7.5);
           pdf.setTextColor(
             receptionAgeDanger
-              ? '#fee2e2'
-              : '#cbd5e1',
+              ? '#b91c1c'
+              : muted,
           );
+
           pdf.text(
             'DÍAS DESDE ÚLTIMA RECEPCIÓN',
-            ageX + heroW / 2,
+            ageX + ageW / 2,
             y + 22,
             { align: 'center' },
           );
 
-          pdf.setDrawColor(
-            receptionAgeDanger
-              ? '#fca5a5'
-              : '#64748b',
-          );
-          pdf.setFillColor(
-            receptionAgeDanger
-              ? '#b91c1c'
-              : '#273449',
-          );
-          pdf.circle(
-            ageX + heroW / 2,
-            y + 59,
-            29,
-            'FD',
-          );
-
-          pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(30);
-          pdf.setTextColor('#ffffff');
+          pdf.setTextColor(ageValueColor);
           pdf.text(
             daysSinceLastReception === null
               ? '-'
               : fmt(daysSinceLastReception),
-            ageX + heroW / 2,
-            y + 68,
+            ageX + ageW / 2,
+            y + 57,
             { align: 'center' },
           );
 
           const ageNote =
             daysSinceLastReception === null
-              ? 'Fecha de recepción no disponible'
+              ? 'Fecha no disponible'
               : receptionAgeDanger
-                ? `Última recepción: ${plain(
+                ? `Recepción ${plain(
                     reception.movement_date,
-                  )} · Más de 35 días`
-                : `Última recepción: ${plain(
+                  )} · Alerta de baja rotación`
+                : `Última recepción ${plain(
                     reception.movement_date,
                   )}`;
 
-          pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(8);
+          pdf.setFont(
+            'helvetica',
+            'normal',
+          );
+          pdf.setFontSize(7.8);
           pdf.setTextColor(
             receptionAgeDanger
-              ? '#fee2e2'
-              : '#cbd5e1',
+              ? '#b91c1c'
+              : muted,
           );
+
           pdf.text(
             pdf.splitTextToSize(
               ageNote,
-              heroW - 50,
+              ageW - 24,
             ),
-            ageX + heroW / 2,
-            y + 101,
+            ageX + ageW / 2,
+            y + 77,
             { align: 'center' },
           );
 
-          y += heroH + 12;
+          y += heroH + 14;
 
-          const kpiH = 66;
-          const gap = 10;
+          const kpiGap = 10;
+          const kpiH = 58;
           const kpiW =
-            (contentWidth - gap * 4) / 5;
+            (contentWidth - kpiGap * 3) / 4;
 
           card(
             margin,
@@ -454,11 +467,13 @@
             kpiH,
             'Recibidas',
             fmt(
-              summary.piezas_recibidas_ultima_recepcion,
+              summary
+                .piezas_recibidas_ultima_recepcion,
             ),
             isPeriod
               ? `${fmt(
-                  data.period_receptions?.length || 0,
+                  data.period_receptions
+                    ?.length || 0,
                 )} recepciones`
               : `Recepción ${plain(
                   reception.reception_id,
@@ -466,7 +481,7 @@
           );
 
           card(
-            margin + (kpiW + gap),
+            margin + kpiW + kpiGap,
             y,
             kpiW,
             kpiH,
@@ -482,9 +497,44 @@
           );
 
           card(
-            margin + (kpiW + gap) * 2,
+            margin +
+              (kpiW + kpiGap) * 2,
             y,
             kpiW,
+            kpiH,
+            'Salidas stock',
+            fmt(
+              summary
+                .piezas_salidas_stock_desde_ultima_recepcion,
+            ),
+            `${pct(
+              summary
+                .salidas_vs_recepcion_pct,
+            )} de entradas`,
+          );
+
+          card(
+            margin +
+              (kpiW + kpiGap) * 3,
+            y,
+            kpiW,
+            kpiH,
+            'Stock live',
+            fmt(summary.stock_actual),
+            `Disponible ${fmt(
+              summary.stock_disponible,
+            )}`,
+          );
+
+          y += kpiH + 10;
+
+          const adjustmentW =
+            (contentWidth - kpiGap) / 2;
+
+          card(
+            margin,
+            y,
+            adjustmentW,
             kpiH,
             'Ajuste stock',
             fmt(
@@ -499,29 +549,14 @@
           );
 
           card(
-            margin + (kpiW + gap) * 3,
+            margin + adjustmentW + kpiGap,
             y,
-            kpiW,
+            adjustmentW,
             kpiH,
-            'Salidas stock',
-            fmt(
-              summary
-                .piezas_salidas_stock_desde_ultima_recepcion,
-            ),
-            `${pct(
-              summary.salidas_vs_recepcion_pct,
-            )} de entradas`,
-          );
-
-          card(
-            margin + (kpiW + gap) * 4,
-            y,
-            kpiW,
-            kpiH,
-            'Stock live',
-            fmt(summary.stock_actual),
-            `Disponible ${fmt(
-              summary.stock_disponible,
+            'Sucursal',
+            plain(stock.office_name),
+            `Variant ${plain(
+              data.variant_ids?.join(', '),
             )}`,
           );
 
