@@ -130,8 +130,8 @@
 
         const receptionAgeDanger =
           daysSinceLastReception !== null &&
-          daysSinceLastReception > 35 &&
-          num(summary.sell_through_pct) < 100;
+          daysSinceLastReception >= 35 &&
+          num(summary.sell_through_pct) < 35;
 
         const stats = data.scan_stats || {};
         const movements = data.movements || [];
@@ -197,9 +197,9 @@
             reception.movement_date,
           );
           const receptionAgeDanger =
-            daysSinceLastReception !== null &&
-            daysSinceLastReception > 35 &&
-            num(summary.sell_through_pct) < 100;
+          daysSinceLastReception !== null &&
+          daysSinceLastReception >= 35 &&
+          num(summary.sell_through_pct) < 35;
           const stats = data.scan_stats || {};
           const timeline = groupByDay(data.movements || []);
           const movements = data.movements || [];
