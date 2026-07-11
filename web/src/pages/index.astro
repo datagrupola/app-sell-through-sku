@@ -193,6 +193,13 @@
           const stock = data.stock_matches?.[0] || {};
           const summary = data.summary || {};
           const reception = data.last_reception || {};
+          const daysSinceLastReception = daysSinceDate(
+            reception.movement_date,
+          );
+          const receptionAgeDanger =
+            daysSinceLastReception !== null &&
+            daysSinceLastReception > 35 &&
+            num(summary.sell_through_pct) < 100;
           const stats = data.scan_stats || {};
           const timeline = groupByDay(data.movements || []);
           const movements = data.movements || [];
@@ -212,6 +219,8 @@
           const amber = '#92400e';
           const amberBg = '#fffbeb';
           const red = '#991b1b';
+          const dangerRed = '#dc2626';
+          const dangerDark = '#7f1d1d';
           let y = margin;
           const footer = () => { pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7.5); pdf.setTextColor(muted); pdf.text(`Generado ${new Date().toLocaleString('es-MX')} · ${plain(data.function_version)} · ${plain(data.scan_start_date || data.start_date)} a ${plain(data.end_date)} · ${modeTitle}`, margin, pageHeight - 18); pdf.text(`Página ${pdf.getNumberOfPages()}`, pageWidth - margin - 36, pageHeight - 18); };
           const newPage = () => { footer(); pdf.addPage(); y = margin; };
@@ -233,12 +242,289 @@
           pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8.5); pdf.setTextColor('#cbd5e1'); pdf.text(`SKU ${plain(stock.sku || data.query)} · ${plain(stock.office_name)} · Variant ${plain(data.variant_ids?.join(', '))}`, pageWidth - margin - 330, y + 48, { maxWidth: 310 });
           y += 92;
 
-          const kpiH = 74; const gap = 10; const kpiW = (contentWidth - gap * 4) / 5;
-          card(margin, y, kpiW, kpiH, 'Sell-through venta', pct(summary.sell_through_pct), `${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} de ${fmt(summary.piezas_recibidas_ultima_recepcion)} pzas`, 'dark');
-          card(margin + (kpiW + gap), y, kpiW, kpiH, 'Recibidas', fmt(summary.piezas_recibidas_ultima_recepcion), isPeriod ? `${fmt(data.period_receptions?.length || 0)} recepciones` : `Recepción ${plain(reception.reception_id)}`);
-          card(margin + (kpiW + gap) * 2, y, kpiW, kpiH, 'Vendidas netas', fmt(summary.piezas_netas_venta_desde_ultima_recepcion), `Devueltas ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}`);
-          card(margin + (kpiW + gap) * 3, y, kpiW, kpiH, 'Ajuste stock', fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion), 'Salida no venta', summary.advertencia_salidas_superan_ultima_recepcion ? 'warning' : 'neutral');
-          card(margin + (kpiW + gap) * 4, y, kpiW, kpiH, 'Stock live', fmt(summary.stock_actual), `Disponible ${fmt(summary.stock_disponible)}`);
+          const heroGap = 12;
+          const heroH = 116;
+          const heroW = (contentWidth - heroGap) / 2;
+
+          pdf.setDrawColor(dark);
+          pdf.setFillColor(dark);
+          pdf.roundedRect(
+            margin,
+            y,
+            heroW,
+            heroH,
+            14,
+            14,
+            'FD',
+          );
+
+          const gaugeX = margin + 60;
+          const gaugeY = y + heroH / 2;
+          const gaugeRadius = 34;
+          const gaugeValue = Math.max(
+            0,
+            Math.min(100, num(summary.sell_through_pct)),
+          );
+
+          pdf.setLineWidth(10);
+          pdf.setDrawColor('#475569');
+          pdf.circle(
+            gaugeX,
+            gaugeY,
+            gaugeRadius,
+            'S',
+          );
+
+          pdf.setDrawColor('#60a5fa');
+          pdf.setLineWidth(10);
+
+          const gaugeSteps = Math.max(
+            1,
+            Math.round(gaugeValue * 1.2),
+          );
+
+          for (let step = 0; step < gaugeSteps; step += 1) {
+            const startAngle =
+              -Math.PI / 2 +
+              (step / 120) * Math.PI * 2;
+            const endAngle =
+              -Math.PI / 2 +
+              ((step + 1) / 120) * Math.PI * 2;
+
+            pdf.line(
+              gaugeX +
+                Math.cos(startAngle) * gaugeRadius,
+              gaugeY +
+                Math.sin(startAngle) * gaugeRadius,
+              gaugeX +
+                Math.cos(endAngle) * gaugeRadius,
+              gaugeY +
+                Math.sin(endAngle) * gaugeRadius,
+            );
+          }
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(18);
+          pdf.setTextColor('#ffffff');
+          pdf.text(
+            pct(summary.sell_through_pct),
+            gaugeX,
+            gaugeY + 4,
+            { align: 'center' },
+          );
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(7.5);
+          pdf.setTextColor('#cbd5e1');
+          pdf.text(
+            'venta',
+            gaugeX,
+            gaugeY + 18,
+            { align: 'center' },
+          );
+
+          const sellTextX = margin + 125;
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor('#ffffff');
+          pdf.text(
+            'SELL-THROUGH POR VENTA',
+            sellTextX,
+            y + 43,
+          );
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(10);
+          pdf.setTextColor('#cbd5e1');
+          pdf.text(
+            pdf.splitTextToSize(
+              `${fmt(
+                summary.piezas_netas_venta_desde_ultima_recepcion,
+              )} piezas netas vendidas de ${fmt(
+                summary.piezas_recibidas_ultima_recepcion,
+              )} recibidas.`,
+              heroW - 145,
+            ),
+            sellTextX,
+            y + 64,
+          );
+
+          const ageX = margin + heroW + heroGap;
+          const ageFill = receptionAgeDanger
+            ? dangerRed
+            : dark;
+
+          pdf.setDrawColor(
+            receptionAgeDanger ? dangerDark : dark,
+          );
+          pdf.setFillColor(ageFill);
+          pdf.roundedRect(
+            ageX,
+            y,
+            heroW,
+            heroH,
+            14,
+            14,
+            'FD',
+          );
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor(
+            receptionAgeDanger
+              ? '#fee2e2'
+              : '#cbd5e1',
+          );
+          pdf.text(
+            'DÍAS DESDE ÚLTIMA RECEPCIÓN',
+            ageX + heroW / 2,
+            y + 22,
+            { align: 'center' },
+          );
+
+          pdf.setDrawColor(
+            receptionAgeDanger
+              ? '#fca5a5'
+              : '#64748b',
+          );
+          pdf.setFillColor(
+            receptionAgeDanger
+              ? '#b91c1c'
+              : '#273449',
+          );
+          pdf.circle(
+            ageX + heroW / 2,
+            y + 59,
+            29,
+            'FD',
+          );
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(30);
+          pdf.setTextColor('#ffffff');
+          pdf.text(
+            daysSinceLastReception === null
+              ? '-'
+              : fmt(daysSinceLastReception),
+            ageX + heroW / 2,
+            y + 68,
+            { align: 'center' },
+          );
+
+          const ageNote =
+            daysSinceLastReception === null
+              ? 'Fecha de recepción no disponible'
+              : receptionAgeDanger
+                ? `Última recepción: ${plain(
+                    reception.movement_date,
+                  )} · Más de 35 días`
+                : `Última recepción: ${plain(
+                    reception.movement_date,
+                  )}`;
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(8);
+          pdf.setTextColor(
+            receptionAgeDanger
+              ? '#fee2e2'
+              : '#cbd5e1',
+          );
+          pdf.text(
+            pdf.splitTextToSize(
+              ageNote,
+              heroW - 50,
+            ),
+            ageX + heroW / 2,
+            y + 101,
+            { align: 'center' },
+          );
+
+          y += heroH + 12;
+
+          const kpiH = 66;
+          const gap = 10;
+          const kpiW =
+            (contentWidth - gap * 4) / 5;
+
+          card(
+            margin,
+            y,
+            kpiW,
+            kpiH,
+            'Recibidas',
+            fmt(
+              summary.piezas_recibidas_ultima_recepcion,
+            ),
+            isPeriod
+              ? `${fmt(
+                  data.period_receptions?.length || 0,
+                )} recepciones`
+              : `Recepción ${plain(
+                  reception.reception_id,
+                )}`,
+          );
+
+          card(
+            margin + (kpiW + gap),
+            y,
+            kpiW,
+            kpiH,
+            'Vendidas netas',
+            fmt(
+              summary
+                .piezas_netas_venta_desde_ultima_recepcion,
+            ),
+            `Devueltas ${fmt(
+              summary
+                .piezas_devueltas_desde_ultima_recepcion,
+            )}`,
+          );
+
+          card(
+            margin + (kpiW + gap) * 2,
+            y,
+            kpiW,
+            kpiH,
+            'Ajuste stock',
+            fmt(
+              summary
+                .piezas_consumidas_ajuste_stock_desde_ultima_recepcion,
+            ),
+            'Salida no venta',
+            summary
+              .advertencia_salidas_superan_ultima_recepcion
+              ? 'warning'
+              : 'neutral',
+          );
+
+          card(
+            margin + (kpiW + gap) * 3,
+            y,
+            kpiW,
+            kpiH,
+            'Salidas stock',
+            fmt(
+              summary
+                .piezas_salidas_stock_desde_ultima_recepcion,
+            ),
+            `${pct(
+              summary.salidas_vs_recepcion_pct,
+            )} de entradas`,
+          );
+
+          card(
+            margin + (kpiW + gap) * 4,
+            y,
+            kpiW,
+            kpiH,
+            'Stock live',
+            fmt(summary.stock_actual),
+            `Disponible ${fmt(
+              summary.stock_disponible,
+            )}`,
+          );
+
           y += kpiH + 18;
 
           if (summary.advertencia_salidas_superan_ultima_recepcion) {
