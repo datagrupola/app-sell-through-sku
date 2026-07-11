@@ -185,163 +185,207 @@
 
       const downloadPdf = async () => {
         if (!lastCalculation) return;
+
         pdfButton.disabled = true;
         const originalText = pdfButton.textContent;
         pdfButton.textContent = 'Generando PDF...';
+
         try {
           const data = lastCalculation;
           const stock = data.stock_matches?.[0] || {};
           const summary = data.summary || {};
           const reception = data.last_reception || {};
+          const isPeriod = data.analysis_mode === 'period';
+          const modeTitle = isPeriod
+            ? 'Periodo explícito'
+            : 'Última recepción';
+
           const daysSinceLastReception = daysSinceDate(
             reception.movement_date,
           );
+
           const receptionAgeDanger =
-          daysSinceLastReception !== null &&
-          daysSinceLastReception >= 35 &&
-          num(summary.sell_through_pct) < 35;
-          const stats = data.scan_stats || {};
-          const timeline = groupByDay(data.movements || []);
-          const movements = data.movements || [];
-          const isPeriod = data.analysis_mode === 'period';
-          const modeTitle = isPeriod ? 'Periodo explícito' : 'Última recepción';
-          const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-          const pageWidth = pdf.internal.pageSize.getWidth();
-          const pageHeight = pdf.internal.pageSize.getHeight();
+            daysSinceLastReception !== null &&
+            daysSinceLastReception >= 35 &&
+            num(summary.sell_through_pct) < 35;
+
+          const sellThrough = Math.max(
+            0,
+            Math.min(100, num(summary.sell_through_pct)),
+          );
+
+          const received = num(
+            summary.piezas_recibidas_ultima_recepcion,
+          );
+
+          const soldNet = num(
+            summary
+              .piezas_netas_venta_desde_ultima_recepcion,
+          );
+
+          const returned = num(
+            summary
+              .piezas_devueltas_desde_ultima_recepcion,
+          );
+
+          const adjustments = num(
+            summary
+              .piezas_consumidas_ajuste_stock_desde_ultima_recepcion,
+          );
+
+          const stockCurrent = num(summary.stock_actual);
+          const stockAvailable = num(summary.stock_disponible);
+
+          const pdf = new jsPDF({
+            orientation: 'landscape',
+            unit: 'pt',
+            format: 'a4',
+          });
+
+          const pageWidth =
+            pdf.internal.pageSize.getWidth();
+
+          const pageHeight =
+            pdf.internal.pageSize.getHeight();
+
           const margin = 34;
-          const contentWidth = pageWidth - margin * 2;
+          const contentWidth =
+            pageWidth - margin * 2;
+
           const dark = '#172033';
           const muted = '#64748b';
           const border = '#dbe3ef';
           const soft = '#f8fafc';
-          const blue = '#2563eb';
+          const blue = '#3b82f6';
+          const blueSoft = '#dbeafe';
+          const red = '#b91c1c';
+          const redBorder = '#ef4444';
+          const redSoft = '#fff1f2';
           const green = '#166534';
-          const amber = '#92400e';
-          const amberBg = '#fffbeb';
-          const red = '#991b1b';
-          const dangerRed = '#dc2626';
-          const dangerDark = '#7f1d1d';
+          const greenSoft = '#f0fdf4';
+
           let y = margin;
-          const footer = () => { pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7.5); pdf.setTextColor(muted); pdf.text(`Generado ${new Date().toLocaleString('es-MX')} · ${plain(data.function_version)} · ${plain(data.scan_start_date || data.start_date)} a ${plain(data.end_date)} · ${modeTitle}`, margin, pageHeight - 18); pdf.text(`Página ${pdf.getNumberOfPages()}`, pageWidth - margin - 36, pageHeight - 18); };
-          const newPage = () => { footer(); pdf.addPage(); y = margin; };
-          const ensure = (height) => { if (y + height > pageHeight - 34) newPage(); };
-          const title = (label, value) => { pdf.setFont('helvetica', 'bold'); pdf.setFontSize(7.5); pdf.setTextColor(muted); pdf.text(label.toUpperCase(), margin, y); y += 16; pdf.setFontSize(16); pdf.setTextColor(dark); pdf.text(plain(value), margin, y); y += 18; };
-          const card = (x, yPos, w, h, label, value, note = '', mode = 'neutral') => {
-            const fill = mode === 'dark' ? dark : mode === 'warning' ? amberBg : soft;
-            const labelColor = mode === 'dark' ? '#cbd5e1' : muted;
-            const valueColor = mode === 'dark' ? '#ffffff' : mode === 'warning' ? amber : dark;
-            pdf.setDrawColor(mode === 'warning' ? '#f59e0b' : border); pdf.setFillColor(fill); pdf.roundedRect(x, yPos, w, h, 10, 10, 'FD');
-            pdf.setFont('helvetica', 'bold'); pdf.setFontSize(7.2); pdf.setTextColor(labelColor); pdf.text(label.toUpperCase(), x + 11, yPos + 15);
-            pdf.setFontSize(18); pdf.setTextColor(valueColor); pdf.text(plain(value), x + 11, yPos + 39, { maxWidth: w - 22 });
-            if (note) { pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7.4); pdf.setTextColor(labelColor); pdf.text(pdf.splitTextToSize(plain(note), w - 22), x + 11, yPos + 56); }
+
+          const drawRoundedCard = (
+            x,
+            yPos,
+            width,
+            height,
+            fillColor = '#ffffff',
+            borderColor = border,
+          ) => {
+            pdf.setLineWidth(0.8);
+            pdf.setDrawColor(borderColor);
+            pdf.setFillColor(fillColor);
+            pdf.roundedRect(
+              x,
+              yPos,
+              width,
+              height,
+              10,
+              10,
+              'FD',
+            );
           };
 
-          pdf.setFillColor(dark); pdf.roundedRect(margin, y, contentWidth, 72, 14, 14, 'F');
-          pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor('#cbd5e1'); pdf.text('CHINO REGALADO · BSALE LIVE · SELL-THROUGH V2', margin + 18, y + 20);
-          pdf.setFontSize(24); pdf.setTextColor('#ffffff'); pdf.text(`Reporte por SKU · ${modeTitle}`, margin + 18, y + 48);
-          pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8.5); pdf.setTextColor('#cbd5e1'); pdf.text(`SKU ${plain(stock.sku || data.query)} · ${plain(stock.office_name)} · Variant ${plain(data.variant_ids?.join(', '))}`, pageWidth - margin - 330, y + 48, { maxWidth: 310 });
-          y += 92;
+          const drawMetricCard = (
+            x,
+            yPos,
+            width,
+            label,
+            value,
+            note,
+          ) => {
+            drawRoundedCard(
+              x,
+              yPos,
+              width,
+              64,
+              soft,
+              border,
+            );
 
-          const heroGap = 12;
-          const heroH = 94;
-          const sellW = contentWidth * 0.62;
-          const ageW = contentWidth - sellW - heroGap;
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(7.5);
+            pdf.setTextColor(muted);
+            pdf.text(
+              plain(label).toUpperCase(),
+              x + 13,
+              yPos + 17,
+            );
 
-          pdf.setDrawColor(dark);
+            pdf.setFontSize(20);
+            pdf.setTextColor(dark);
+            pdf.text(
+              plain(value),
+              x + 13,
+              yPos + 42,
+              { maxWidth: width - 26 },
+            );
+
+            if (note) {
+              pdf.setFont(
+                'helvetica',
+                'normal',
+              );
+              pdf.setFontSize(7.3);
+              pdf.setTextColor(muted);
+              pdf.text(
+                plain(note),
+                x + 13,
+                yPos + 56,
+                { maxWidth: width - 26 },
+              );
+            }
+          };
+
+          const footerText =
+            `Generado ${new Date().toLocaleString('es-MX')} · ` +
+            `Datos hasta ${plain(data.end_date)} · ` +
+            `${modeTitle}`;
+
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(7);
+          pdf.setTextColor(muted);
+          pdf.text(
+            footerText,
+            margin,
+            pageHeight - 16,
+          );
+
+          pdf.text(
+            `SKU ${plain(stock.sku || data.query)}`,
+            pageWidth - margin,
+            pageHeight - 16,
+            { align: 'right' },
+          );
+
           pdf.setFillColor(dark);
           pdf.roundedRect(
             margin,
             y,
-            sellW,
-            heroH,
+            contentWidth,
+            68,
             12,
             12,
-            'FD',
+            'F',
           );
-
-          const gaugeX = margin + 54;
-          const gaugeY = y + heroH / 2;
-          const gaugeRadius = 27;
-          const gaugeValue = Math.max(
-            0,
-            Math.min(
-              100,
-              num(summary.sell_through_pct),
-            ),
-          );
-
-          pdf.setLineWidth(8);
-          pdf.setDrawColor('#475569');
-          pdf.circle(
-            gaugeX,
-            gaugeY,
-            gaugeRadius,
-            'S',
-          );
-
-          pdf.setDrawColor('#60a5fa');
-
-          const gaugeSteps = Math.max(
-            1,
-            Math.round(gaugeValue),
-          );
-
-          for (
-            let step = 0;
-            step < gaugeSteps;
-            step += 1
-          ) {
-            const startAngle =
-              -Math.PI / 2 +
-              (step / 100) * Math.PI * 2;
-
-            const endAngle =
-              -Math.PI / 2 +
-              ((step + 1) / 100) * Math.PI * 2;
-
-            pdf.line(
-              gaugeX +
-                Math.cos(startAngle) *
-                  gaugeRadius,
-              gaugeY +
-                Math.sin(startAngle) *
-                  gaugeRadius,
-              gaugeX +
-                Math.cos(endAngle) *
-                  gaugeRadius,
-              gaugeY +
-                Math.sin(endAngle) *
-                  gaugeRadius,
-            );
-          }
-
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(17);
-          pdf.setTextColor('#ffffff');
-          pdf.text(
-            pct(summary.sell_through_pct),
-            gaugeX,
-            gaugeY + 5,
-            { align: 'center' },
-          );
-
-          const sellTextX = margin + 104;
 
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(8);
-          pdf.setTextColor('#cbd5e1');
+          pdf.setTextColor('#94a3b8');
           pdf.text(
-            'SELL-THROUGH POR VENTA',
-            sellTextX,
-            y + 30,
+            'CHINO REGALADO · BSALE LIVE',
+            margin + 18,
+            y + 19,
           );
 
-          pdf.setFontSize(19);
+          pdf.setFontSize(22);
           pdf.setTextColor('#ffffff');
           pdf.text(
-            pct(summary.sell_through_pct),
-            sellTextX,
-            y + 54,
+            'Sell-through por SKU',
+            margin + 18,
+            y + 45,
           );
 
           pdf.setFont(
@@ -350,126 +394,204 @@
           );
           pdf.setFontSize(8.5);
           pdf.setTextColor('#cbd5e1');
+
+          const headerMeta =
+            `${plain(stock.sku || data.query)} · ` +
+            `${plain(stock.office_name)} · ` +
+            `Corte ${plain(data.end_date)}`;
+
           pdf.text(
-            `${fmt(
-              summary
-                .piezas_netas_venta_desde_ultima_recepcion,
-            )} piezas netas vendidas de ${fmt(
-              summary
-                .piezas_recibidas_ultima_recepcion,
-            )} recibidas`,
-            sellTextX,
-            y + 72,
+            headerMeta,
+            pageWidth - margin - 18,
+            y + 43,
             {
-              maxWidth: sellW - 122,
+              align: 'right',
+              maxWidth: 360,
             },
           );
 
-          const ageX =
-            margin + sellW + heroGap;
+          y += 84;
 
-          const ageFill =
-            receptionAgeDanger
-              ? '#fff1f2'
-              : '#f8fafc';
+          const heroGap = 12;
+          const heroHeight = 108;
+          const heroLeftWidth =
+            contentWidth * 0.67;
 
-          const ageBorder =
-            receptionAgeDanger
-              ? '#ef4444'
-              : border;
+          const heroRightWidth =
+            contentWidth -
+            heroLeftWidth -
+            heroGap;
 
-          const ageValueColor =
-            receptionAgeDanger
-              ? '#b91c1c'
-              : dark;
+          drawRoundedCard(
+            margin,
+            y,
+            heroLeftWidth,
+            heroHeight,
+            dark,
+            dark,
+          );
 
-          pdf.setDrawColor(ageBorder);
-          pdf.setFillColor(ageFill);
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor('#93c5fd');
+          pdf.text(
+            'SELL-THROUGH POR VENTA',
+            margin + 20,
+            y + 24,
+          );
+
+          pdf.setFontSize(34);
+          pdf.setTextColor('#ffffff');
+          pdf.text(
+            pct(sellThrough),
+            margin + 20,
+            y + 62,
+          );
+
+          pdf.setFont(
+            'helvetica',
+            'normal',
+          );
+          pdf.setFontSize(10);
+          pdf.setTextColor('#cbd5e1');
+
+          pdf.text(
+            `${fmt(soldNet)} piezas netas vendidas de ` +
+              `${fmt(received)} recibidas`,
+            margin + 118,
+            y + 58,
+            {
+              maxWidth:
+                heroLeftWidth - 140,
+            },
+          );
+
+          const progressX = margin + 20;
+          const progressY = y + 83;
+          const progressWidth =
+            heroLeftWidth - 40;
+          const progressHeight = 9;
+
+          pdf.setFillColor('#334155');
           pdf.roundedRect(
+            progressX,
+            progressY,
+            progressWidth,
+            progressHeight,
+            4.5,
+            4.5,
+            'F',
+          );
+
+          const progressFill =
+            progressWidth *
+            (sellThrough / 100);
+
+          if (progressFill > 0) {
+            pdf.setFillColor(blue);
+            pdf.roundedRect(
+              progressX,
+              progressY,
+              progressFill,
+              progressHeight,
+              4.5,
+              4.5,
+              'F',
+            );
+          }
+
+          const ageX =
+            margin +
+            heroLeftWidth +
+            heroGap;
+
+          drawRoundedCard(
             ageX,
             y,
-            ageW,
-            heroH,
-            12,
-            12,
-            'FD',
+            heroRightWidth,
+            heroHeight,
+            receptionAgeDanger
+              ? redSoft
+              : '#ffffff',
+            receptionAgeDanger
+              ? redBorder
+              : border,
           );
 
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(7.5);
           pdf.setTextColor(
             receptionAgeDanger
-              ? '#b91c1c'
+              ? red
               : muted,
           );
 
           pdf.text(
             'DÍAS DESDE ÚLTIMA RECEPCIÓN',
-            ageX + ageW / 2,
-            y + 22,
+            ageX + heroRightWidth / 2,
+            y + 24,
             { align: 'center' },
           );
 
-          pdf.setFontSize(30);
-          pdf.setTextColor(ageValueColor);
+          pdf.setFontSize(32);
+          pdf.setTextColor(
+            receptionAgeDanger
+              ? red
+              : dark,
+          );
+
           pdf.text(
             daysSinceLastReception === null
-              ? '-'
+              ? '—'
               : fmt(daysSinceLastReception),
-            ageX + ageW / 2,
-            y + 57,
+            ageX + heroRightWidth / 2,
+            y + 65,
             { align: 'center' },
           );
-
-          const ageNote =
-            daysSinceLastReception === null
-              ? 'Fecha no disponible'
-              : receptionAgeDanger
-                ? `Recepción ${plain(
-                    reception.movement_date,
-                  )} · Alerta de baja rotación`
-                : `Última recepción ${plain(
-                    reception.movement_date,
-                  )}`;
 
           pdf.setFont(
             'helvetica',
             'normal',
           );
-          pdf.setFontSize(7.8);
+          pdf.setFontSize(8);
           pdf.setTextColor(
             receptionAgeDanger
-              ? '#b91c1c'
+              ? red
               : muted,
           );
 
+          const ageText =
+            daysSinceLastReception === null
+              ? 'Fecha no disponible'
+              : `Última recepción: ${plain(
+                  reception.movement_date,
+                )}`;
+
           pdf.text(
-            pdf.splitTextToSize(
-              ageNote,
-              ageW - 24,
-            ),
-            ageX + ageW / 2,
-            y + 77,
-            { align: 'center' },
+            ageText,
+            ageX + heroRightWidth / 2,
+            y + 88,
+            {
+              align: 'center',
+              maxWidth:
+                heroRightWidth - 24,
+            },
           );
 
-          y += heroH + 14;
+          y += heroHeight + 14;
 
-          const kpiGap = 10;
-          const kpiH = 58;
-          const kpiW =
-            (contentWidth - kpiGap * 3) / 4;
+          const metricGap = 10;
+          const metricWidth =
+            (contentWidth -
+              metricGap * 3) /
+            4;
 
-          card(
+          drawMetricCard(
             margin,
             y,
-            kpiW,
-            kpiH,
+            metricWidth,
             'Recibidas',
-            fmt(
-              summary
-                .piezas_recibidas_ultima_recepcion,
-            ),
+            fmt(received),
             isPeriod
               ? `${fmt(
                   data.period_receptions
@@ -480,137 +602,209 @@
                 )}`,
           );
 
-          card(
-            margin + kpiW + kpiGap,
+          drawMetricCard(
+            margin +
+              metricWidth +
+              metricGap,
             y,
-            kpiW,
-            kpiH,
+            metricWidth,
             'Vendidas netas',
-            fmt(
-              summary
-                .piezas_netas_venta_desde_ultima_recepcion,
-            ),
-            `Devueltas ${fmt(
-              summary
-                .piezas_devueltas_desde_ultima_recepcion,
+            fmt(soldNet),
+            `Devueltas: ${fmt(returned)}`,
+          );
+
+          drawMetricCard(
+            margin +
+              (metricWidth + metricGap) * 2,
+            y,
+            metricWidth,
+            'Stock actual',
+            fmt(stockCurrent),
+            `Disponible: ${fmt(
+              stockAvailable,
             )}`,
           );
 
-          card(
+          drawMetricCard(
             margin +
-              (kpiW + kpiGap) * 2,
+              (metricWidth + metricGap) * 3,
             y,
-            kpiW,
-            kpiH,
-            'Salidas stock',
-            fmt(
-              summary
-                .piezas_salidas_stock_desde_ultima_recepcion,
-            ),
-            `${pct(
-              summary
-                .salidas_vs_recepcion_pct,
-            )} de entradas`,
+            metricWidth,
+            'Ajustes no venta',
+            fmt(adjustments),
+            'Salidas que afectaron stock',
           );
 
-          card(
-            margin +
-              (kpiW + kpiGap) * 3,
-            y,
-            kpiW,
-            kpiH,
-            'Stock live',
-            fmt(summary.stock_actual),
-            `Disponible ${fmt(
-              summary.stock_disponible,
-            )}`,
-          );
+          y += 80;
 
-          y += kpiH + 10;
+          let conclusionTitle =
+            'ROTACIÓN EN PROGRESO';
 
-          const adjustmentW =
-            (contentWidth - kpiGap) / 2;
+          let conclusionText =
+            `Se ha vendido el ${pct(
+              sellThrough,
+            )} de la mercancía recibida.`;
 
-          card(
+          let conclusionFill = blueSoft;
+          let conclusionBorder = blue;
+          let conclusionColor = dark;
+
+          if (receptionAgeDanger) {
+            conclusionTitle =
+              'ALERTA DE BAJA ROTACIÓN';
+
+            conclusionText =
+              `Han pasado ${fmt(
+                daysSinceLastReception,
+              )} días desde la última recepción y ` +
+              `el sell-through por venta es de ${pct(
+                sellThrough,
+              )}.`;
+
+            conclusionFill = redSoft;
+            conclusionBorder = redBorder;
+            conclusionColor = red;
+          } else if (sellThrough >= 80) {
+            conclusionTitle =
+              'ROTACIÓN SALUDABLE';
+
+            conclusionText =
+              `Se ha vendido el ${pct(
+                sellThrough,
+              )} de la recepción en ${fmt(
+                daysSinceLastReception,
+              )} días.`;
+
+            conclusionFill = greenSoft;
+            conclusionBorder = '#22c55e';
+            conclusionColor = green;
+          }
+
+          drawRoundedCard(
             margin,
             y,
-            adjustmentW,
-            kpiH,
-            'Ajuste stock',
-            fmt(
-              summary
-                .piezas_consumidas_ajuste_stock_desde_ultima_recepcion,
+            contentWidth,
+            62,
+            conclusionFill,
+            conclusionBorder,
+          );
+
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor(conclusionColor);
+          pdf.text(
+            conclusionTitle,
+            margin + 15,
+            y + 20,
+          );
+
+          pdf.setFont(
+            'helvetica',
+            'normal',
+          );
+          pdf.setFontSize(9.5);
+          pdf.setTextColor(dark);
+
+          pdf.text(
+            pdf.splitTextToSize(
+              conclusionText,
+              contentWidth - 30,
             ),
-            'Salida no venta',
-            summary
-              .advertencia_salidas_superan_ultima_recepcion
-              ? 'warning'
-              : 'neutral',
+            margin + 15,
+            y + 42,
           );
 
-          card(
-            margin + adjustmentW + kpiGap,
+          y += 78;
+
+          drawRoundedCard(
+            margin,
             y,
-            adjustmentW,
-            kpiH,
-            'Sucursal',
-            plain(stock.office_name),
-            `Variant ${plain(
-              data.variant_ids?.join(', '),
-            )}`,
+            contentWidth,
+            82,
+            '#ffffff',
+            border,
           );
 
-          y += kpiH + 18;
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor(muted);
 
-          if (summary.advertencia_salidas_superan_ultima_recepcion) {
-            pdf.setDrawColor('#f59e0b'); pdf.setFillColor(amberBg); pdf.roundedRect(margin, y, contentWidth, 54, 11, 11, 'FD');
-            pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(amber); pdf.text('ADVERTENCIA DE TRAZABILIDAD', margin + 13, y + 17);
-            pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8.2); pdf.setTextColor(dark); pdf.text(pdf.splitTextToSize(plain(summary.nota_trazabilidad), contentWidth - 26), margin + 13, y + 35);
-            y += 72;
-          }
+          pdf.text(
+            isPeriod
+              ? 'RESUMEN DEL PERIODO'
+              : 'DATOS DE LA ÚLTIMA RECEPCIÓN',
+            margin + 15,
+            y + 19,
+          );
 
-          pdf.setDrawColor(border); pdf.setFillColor('#ffffff'); pdf.roundedRect(margin, y, contentWidth, 76, 12, 12, 'FD');
-          pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(muted); pdf.text(isPeriod ? 'PERIODO ANALIZADO' : 'ÚLTIMA RECEPCIÓN', margin + 14, y + 17);
-          pdf.setFontSize(13); pdf.setTextColor(dark); pdf.text(isPeriod ? `${plain(data.start_date)} a ${plain(data.end_date)}` : `Recepción ${plain(reception.reception_id)} · ${plain(reception.movement_date)}`, margin + 14, y + 38);
-          pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8.5); pdf.setTextColor(dark);
-          const contextText = isPeriod ? `Entradas ${fmt(summary.piezas_recibidas_ultima_recepcion)} · Ventas netas ${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} · Ajuste stock ${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)} · Recepciones ${fmt(data.period_receptions?.length || 0)}` : `Piezas ${fmt(reception.quantity)} · Costo ${money(reception.cost)} · Stock al recibir ${fmt(reception.variant_stock)} · Doc ${plain(reception.document_number)} · Despacho ${plain(reception.internal_dispatch_id)}`;
-          pdf.text(contextText, margin + 14, y + 57, { maxWidth: contentWidth - 28 });
-          y += 98;
+          pdf.setFontSize(13);
+          pdf.setTextColor(dark);
 
-          title('Movimientos por día', isPeriod ? 'Recepciones, ventas, devoluciones y ajustes del periodo' : 'Movimientos desde la última recepción');
-          const headers = ['Fecha', 'Recibidas', 'Vendidas', 'Devueltas', 'Ajuste', 'Salidas', 'Movs.', 'Barra'];
-          const col = [0, 84, 166, 248, 332, 414, 494, 550];
-          const drawHeader = () => { pdf.setFillColor('#eef2f7'); pdf.roundedRect(margin, y, contentWidth, 22, 8, 8, 'F'); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(7.1); pdf.setTextColor(muted); headers.forEach((h, idx) => pdf.text(h.toUpperCase(), margin + col[idx] + 8, y + 14)); y += 28; };
-          drawHeader();
-          const maxOut = Math.max(1, ...timeline.map((row) => Math.max(num(row.received), num(row.stockOut))));
-          for (const row of timeline) {
-            ensure(26); pdf.setDrawColor('#e2e8f0'); pdf.line(margin, y + 24, margin + contentWidth, y + 24);
-            pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8.1); pdf.setTextColor(dark);
-            [row.date, fmt(row.received), fmt(row.sold), fmt(row.returned), fmt(row.consumed), fmt(row.stockOut), fmt(row.movements)].forEach((value, idx) => pdf.text(plain(value), margin + col[idx] + 8, y + 16));
-            const barX = margin + col[7] + 8; const barW = contentWidth - col[7] - 20; const fillW = Math.max(0, (Math.max(num(row.received), num(row.stockOut)) / maxOut) * barW);
-            pdf.setFillColor('#e2e8f0'); pdf.roundedRect(barX, y + 9, barW, 8, 4, 4, 'F');
-            if (fillW > 0) { pdf.setFillColor(row.consumed > 0 ? '#f59e0b' : blue); pdf.roundedRect(barX, y + 9, fillW, 8, 4, 4, 'F'); }
-            y += 24;
-          }
+          const receptionTitle = isPeriod
+            ? `${plain(data.start_date)} a ${plain(
+                data.end_date,
+              )}`
+            : `Recepción ${plain(
+                reception.reception_id,
+              )} · ${plain(
+                reception.movement_date,
+              )}`;
 
-          y += 18; ensure(82); title('Cobertura revisada', 'Lecturas realizadas para construir el reporte');
-          const coverageW = (contentWidth - 24) / 3;
-          card(margin, y, coverageW, 58, 'Recepciones', fmt(stats.receptions?.receptions_seen), `Matches ${fmt(stats.receptions?.matches)}`);
-          card(margin + coverageW + 12, y, coverageW, 58, 'Documentos', fmt(stats.documents?.documents_seen), `Líneas ${fmt(stats.documents?.details_seen)} · matches ${fmt(stats.documents?.matches)}`);
-          card(margin + (coverageW + 12) * 2, y, coverageW, 58, 'Consumos', fmt(stats.consumptions?.consumptions_seen_in_date_range), `Líneas ${fmt(stats.consumptions?.details_seen)} · matches ${fmt(stats.consumptions?.matches)}`);
+          pdf.text(
+            receptionTitle,
+            margin + 15,
+            y + 41,
+          );
 
-          if (movements.length) {
-            newPage(); title('Detalle de movimientos', `Primeros ${Math.min(80, movements.length)} de ${movements.length} movimientos detectados`);
-            const detailCols = [0, 92, 190, 270]; pdf.setFillColor('#eef2f7'); pdf.roundedRect(margin, y, contentWidth, 22, 8, 8, 'F');
-            pdf.setFont('helvetica', 'bold'); pdf.setFontSize(7.2); pdf.setTextColor(muted); ['Fecha', 'Tipo', 'Cantidad', 'Referencia / nota'].forEach((h, idx) => pdf.text(h.toUpperCase(), margin + detailCols[idx] + 8, y + 14)); y += 28;
-            for (const movement of movements.slice(0, 80)) {
-              ensure(24); const type = movementLabel(movement); const qty = num(movement.quantity_signed ?? movement.quantity); const note = movement.document_number ? `Documento ${plain(movement.document_number)}` : movement.consumption_id ? `Consumo ${plain(movement.consumption_id)}` : plain(movement.note);
-              pdf.setDrawColor('#e2e8f0'); pdf.line(margin, y + 22, margin + contentWidth, y + 22); pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8.1); pdf.setTextColor(dark);
-              pdf.text(plain(movement.movement_date), margin + detailCols[0] + 8, y + 15); pdf.text(type, margin + detailCols[1] + 8, y + 15); pdf.setFont('helvetica', 'bold'); pdf.setTextColor(qty < 0 ? red : type.includes('ajuste') ? amber : green); pdf.text(fmt(qty), margin + detailCols[2] + 8, y + 15); pdf.setFont('helvetica', 'normal'); pdf.setTextColor(muted); pdf.text(pdf.splitTextToSize(note, contentWidth - detailCols[3] - 16), margin + detailCols[3] + 8, y + 15); y += 22;
-            }
-          }
-          footer(); pdf.save(`sell-through-${fileSafe(input.value.trim() || data.query)}-${ymd()}.pdf`);
-        } finally { pdfButton.disabled = false; pdfButton.textContent = originalText; }
+          pdf.setFont(
+            'helvetica',
+            'normal',
+          );
+          pdf.setFontSize(8.3);
+          pdf.setTextColor(muted);
+
+          const receptionDetails = isPeriod
+            ? `Entradas: ${fmt(received)} · ` +
+              `Ventas netas: ${fmt(soldNet)} · ` +
+              `Devueltas: ${fmt(returned)} · ` +
+              `Ajustes: ${fmt(adjustments)}`
+            : `Piezas: ${fmt(
+                reception.quantity,
+              )} · ` +
+              `Costo unitario: ${money(
+                reception.cost,
+              )} · ` +
+              `Stock al recibir: ${fmt(
+                reception.variant_stock,
+              )} · ` +
+              `Documento: ${plain(
+                reception.document_number,
+              )} · ` +
+              `Despacho: ${plain(
+                reception.internal_dispatch_id,
+              )}`;
+
+          pdf.text(
+            receptionDetails,
+            margin + 15,
+            y + 62,
+            {
+              maxWidth:
+                contentWidth - 30,
+            },
+          );
+
+          pdf.save(
+            `sell-through-${fileSafe(
+              input.value.trim() ||
+                data.query,
+            )}-${ymd()}.pdf`,
+          );
+        } finally {
+          pdfButton.disabled = false;
+          pdfButton.textContent =
+            originalText;
+        }
       };
 
       const sleep = (milliseconds) =>
