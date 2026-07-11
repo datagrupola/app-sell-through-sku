@@ -228,17 +228,182 @@
         } finally { pdfButton.disabled = false; pdfButton.textContent = originalText; }
       };
 
+      const sleep = (milliseconds) =>
+        new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+      const normalizePeriodResult = (data) => {
+        const summary = data?.summary || {};
+
+        return {
+          ...data,
+          summary: {
+            ...summary,
+            piezas_recibidas_ultima_recepcion:
+              summary.piezas_recibidas_periodo ??
+              summary.piezas_recibidas_ultima_recepcion,
+            piezas_vendidas_desde_ultima_recepcion:
+              summary.piezas_vendidas_periodo ??
+              summary.piezas_vendidas_desde_ultima_recepcion,
+            piezas_devueltas_desde_ultima_recepcion:
+              summary.piezas_devueltas_periodo ??
+              summary.piezas_devueltas_desde_ultima_recepcion,
+            piezas_netas_venta_desde_ultima_recepcion:
+              summary.piezas_netas_venta_periodo ??
+              summary.piezas_netas_venta_desde_ultima_recepcion,
+            piezas_consumidas_ajuste_desde_ultima_recepcion:
+              summary.piezas_consumidas_ajuste_periodo ??
+              summary.piezas_consumidas_ajuste_desde_ultima_recepcion,
+            piezas_consumidas_ajuste_stock_desde_ultima_recepcion:
+              summary.piezas_consumidas_ajuste_stock_periodo ??
+              summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion,
+            piezas_salidas_stock_desde_ultima_recepcion:
+              summary.piezas_salidas_stock_periodo ??
+              summary.piezas_salidas_stock_desde_ultima_recepcion,
+            salidas_vs_recepcion_pct:
+              summary.salidas_vs_recepciones_periodo_pct ??
+              summary.salidas_vs_recepcion_pct,
+            advertencia_salidas_superan_ultima_recepcion:
+              summary.advertencia_salidas_superan_recepciones_periodo ??
+              summary.advertencia_salidas_superan_ultima_recepcion,
+          },
+        };
+      };
+
+      const invokePeriodRequest = async (action, request) => {
+        const { data, error } = await supabase.functions.invoke(
+          'request-sell-through-period-v1',
+          {
+            body: {
+              action,
+              query: request.query,
+              office_id: request.officeId,
+              period_start_date: request.startDate,
+              period_end_date: request.endDate,
+            },
+          },
+        );
+
+        if (error) throw error;
+        if (data?.ok === false || data?.error) {
+          throw new Error(data?.error || 'No se pudo solicitar el cálculo.');
+        }
+
+        return data;
+      };
+
+      const getPeriodResult = async (request) => {
+        const initial = await invokePeriodRequest('start', request);
+
+        if (initial?.status === 'ready' && initial?.result) {
+          return normalizePeriodResult(initial.result);
+        }
+
+        if (initial?.status !== 'processing') {
+          throw new Error('La solicitud devolvió un estado inesperado.');
+        }
+
+        for (let attempt = 1; attempt <= 40; attempt += 1) {
+          setStatus(
+            `Procesando periodo en segundo plano... ${attempt * 15}s`,
+          );
+
+          await sleep(15_000);
+
+          const check = await invokePeriodRequest('check', request);
+
+          if (check?.status === 'ready' && check?.result) {
+            return normalizePeriodResult(check.result);
+          }
+        }
+
+        throw new Error(
+          'El cálculo continúa en proceso. Intenta consultar nuevamente en unos minutos.',
+        );
+      };
+
       pdfButton.addEventListener('click', downloadPdf);
+
       form.addEventListener('submit', async (event) => {
-        event.preventDefault(); const query = input.value.trim(); const mode = modeSelect.value;
-        if (!query) return setStatus('Escribe un SKU o código de barras.');
-        if (mode === 'period' && (!periodStart.value || !periodEnd.value)) return setStatus('Selecciona fecha inicial y fecha final.');
-        if (mode === 'period' && periodStart.value > periodEnd.value) return setStatus('La fecha inicial no puede ser mayor que la fecha final.');
-        button.disabled = true; showPdf(false); result.innerHTML = ''; setStatus(mode === 'period' ? 'Calculando periodo...' : 'Buscando última recepción...');
-        const body = { query, office_ids: [Number(officeSelect.value)], analysis_mode: mode, lookback_days: 365, max_reception_pages_per_office: 0, max_document_pages_per_day_type: 0, max_consumption_pages_per_office: 0, max_reception_details: 1000, max_document_details: 1000, max_consumption_details: 1000 };
-        if (mode === 'period') { body.period_start_date = periodStart.value; body.period_end_date = periodEnd.value; }
-        const { data, error } = await supabase.functions.invoke('calculate-sell-through-live-v2', { body });
-        button.disabled = false; setStatus(''); if (error) return renderError(error); if (data?.error) return renderError(data.error); renderData(data);
+        event.preventDefault();
+
+        const query = input.value.trim();
+        const mode = modeSelect.value;
+
+        if (!query) {
+          return setStatus('Escribe un SKU o código de barras.');
+        }
+
+        if (
+          mode === 'period' &&
+          (!periodStart.value || !periodEnd.value)
+        ) {
+          return setStatus(
+            'Selecciona fecha inicial y fecha final.',
+          );
+        }
+
+        if (
+          mode === 'period' &&
+          periodStart.value > periodEnd.value
+        ) {
+          return setStatus(
+            'La fecha inicial no puede ser mayor que la fecha final.',
+          );
+        }
+
+        button.disabled = true;
+        showPdf(false);
+        result.innerHTML = '';
+
+        try {
+          let data;
+
+          if (mode === 'period') {
+            setStatus('Consultando resultado del periodo...');
+
+            data = await getPeriodResult({
+              query,
+              officeId: Number(officeSelect.value),
+              startDate: periodStart.value,
+              endDate: periodEnd.value,
+            });
+          } else {
+            setStatus('Buscando última recepción...');
+
+            const body = {
+              query,
+              office_ids: [Number(officeSelect.value)],
+              analysis_mode: mode,
+              lookback_days: 365,
+              max_reception_pages_per_office: 0,
+              max_document_pages_per_day_type: 0,
+              max_consumption_pages_per_office: 0,
+              max_reception_details: 1000,
+              max_document_details: 1000,
+              max_consumption_details: 1000,
+            };
+
+            const response = await supabase.functions.invoke(
+              'calculate-sell-through-live-v2',
+              { body },
+            );
+
+            if (response.error) throw response.error;
+            if (response.data?.error) {
+              throw new Error(response.data.error);
+            }
+
+            data = response.data;
+          }
+
+          setStatus('');
+          renderData(data);
+        } catch (error) {
+          setStatus('');
+          renderError(error);
+        } finally {
+          button.disabled = false;
+        }
       });
     </script>
   </body>
