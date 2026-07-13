@@ -49,6 +49,14 @@
       const fmt = (v) => num(v).toLocaleString('es-MX', { maximumFractionDigits: 2 });
       const money = (v) => num(v).toLocaleString('es-MX', { style: 'currency', currency: 'MXN' });
       const pct = (v) => v === null || v === undefined || v === '' ? '—' : `${fmt(v)}%`;
+      const dateUi = (value) => {
+        if (!value) return '—';
+        const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (!match) return String(value);
+        const [, year, month, day] = match;
+        const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+        return `${Number(day)} ${months[Number(month) - 1]} ${year}`;
+      };
       const esc = (v) => String(v ?? '—').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
       const plain = (v) => String(v ?? '—');
       const ymd = () => new Date().toISOString().slice(0, 10);
@@ -112,7 +120,7 @@
       const renderError = (message) => { showPdf(false); result.innerHTML = `<section class="section-card error-card"><div class="section-header"><div><p class="section-kicker">Error</p><h2>No se pudo calcular</h2></div><span class="badge danger">Error</span></div><p class="muted">${esc(message?.message || message)}</p></section>`; };
       const renderNoReception = (data) => {
         const stock = data.stock_matches?.[0] || {}; const summary = data.summary || {}; showPdf(false);
-        result.innerHTML = `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Resultado</p><h2>SKU encontrado, sin recepción</h2></div><span class="badge warning">Sin entrada</span></div><div class="summary-grid compact"><article class="card primary"><span>SKU</span><strong>${esc(stock.sku || data.query)}</strong><small>${esc(stock.office_name)}</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Rango</span><strong>${esc(data.start_date)} a ${esc(data.end_date)}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></section>`;
+        result.innerHTML = `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Resultado</p><h2>SKU encontrado, sin recepción</h2></div><span class="badge warning">Sin entrada</span></div><div class="summary-grid compact"><article class="card primary"><span>SKU</span><strong>${esc(stock.sku || data.query)}</strong><small>${esc(stock.office_name)}</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Rango</span><strong>${esc(dateUi(data.start_date))} a ${esc(dateUi(data.end_date))}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></section>`;
       };
 
       const renderData = (data) => {
@@ -146,13 +154,13 @@
         const movements = data.movements || [];
         const timeline = groupByDay(movements);
         const modeTitle = isPeriod ? 'Periodo explícito' : 'Última recepción';
-        const receivedNote = isPeriod ? `${fmt(data.period_receptions?.length || 0)} recepciones dentro del periodo` : `Recepción ${esc(reception.reception_id)} · ${esc(reception.movement_date)}`;
+        const receivedNote = isPeriod ? `${fmt(data.period_receptions?.length || 0)} recepciones dentro del periodo` : `Recepción ${esc(reception.reception_id)} · ${esc(dateUi(reception.movement_date))}`;
         const warning = hasPriorStock ? `<section class="section-card warning-card"><div class="section-header tight"><div><p class="section-kicker">Contexto de inventario</p><h2>Inventario previo detectado</h2></div><span class="badge warning">Stock previo</span></div><p class="muted block-note">${isPeriod ? 'Las salidas del periodo superan las entradas registradas en ese rango.' : 'Las salidas desde la última recepción superan las piezas recibidas.'} La sucursal ya contaba con existencias de este SKU, por lo que las ventas no pueden atribuirse exclusivamente a ${isPeriod ? 'las entradas del periodo' : 'la última recepción'}. Al menos ${fmt(priorStockMinimum)} piezas de las salidas requirieron inventario previo.</p></section>` : '';
-        const timelineHtml = timeline.map((row) => `<article class="timeline-day"><div class="timeline-date"><strong>${esc(row.date)}</strong><small>${fmt(row.movements)} movimientos</small></div><div class="pill-row"><span><strong>${fmt(row.received)}</strong> recibidas</span><span><strong>${fmt(row.sold)}</strong> vendidas</span><span><strong>${fmt(row.returned)}</strong> devueltas</span><span><strong>${fmt(row.consumed)}</strong> ajustes</span><span><strong>${fmt(row.stockOut)}</strong> salidas stock</span></div></article>`).join('');
-        const movementsHtml = movements.slice(0, 120).map((movement) => `<article class="movement-row ${movementClass(movement)}"><div><strong>${esc(movementLabel(movement))}</strong><small>${esc(movement.movement_date)} · ${esc(movement.note)}</small></div><div class="movement-qty"><strong>${fmt(movement.quantity_signed ?? movement.quantity)}</strong><small>piezas</small></div></article>`).join('');
+        const timelineHtml = timeline.map((row) => `<article class="timeline-day"><div class="timeline-date"><strong>${esc(dateUi(row.date))}</strong><small>${fmt(row.movements)} movimientos</small></div><div class="pill-row"><span><strong>${fmt(row.received)}</strong> recibidas</span><span><strong>${fmt(row.sold)}</strong> vendidas</span><span><strong>${fmt(row.returned)}</strong> devueltas</span><span><strong>${fmt(row.consumed)}</strong> ajustes</span><span><strong>${fmt(row.stockOut)}</strong> salidas stock</span></div></article>`).join('');
+        const movementsHtml = movements.slice(0, 120).map((movement) => `<article class="movement-row ${movementClass(movement)}"><div><strong>${esc(movementLabel(movement))}</strong><small>${esc(dateUi(movement.movement_date))} · ${esc(movement.note)}</small></div><div class="movement-qty"><strong>${fmt(movement.quantity_signed ?? movement.quantity)}</strong><small>piezas</small></div></article>`).join('');
         const context = isPeriod
-          ? `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Periodo analizado</p><h2>${esc(data.start_date)} a ${esc(data.end_date)}</h2></div><span class="badge neutral">Periodo</span></div><dl class="detail-grid"><div><dt>Fecha inicial</dt><dd>${esc(data.start_date)}</dd></div><div><dt>Fecha final</dt><dd>${esc(data.end_date)}</dd></div><div><dt>Recepciones</dt><dd>${fmt(data.period_receptions?.length || 0)}</dd></div><div><dt>Piezas recibidas</dt><dd>${fmt(summary.piezas_recibidas_periodo ?? summary.piezas_recibidas_ultima_recepcion)}</dd></div><div><dt>Vendidas netas</dt><dd>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</dd></div><div><dt>Ajustes stock</dt><dd>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</dd></div></dl></section>`
-          : `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Última recepción</p><h2>Recepción ${esc(reception.reception_id)}</h2></div><span class="badge neutral">${esc(reception.movement_type)}</span></div><dl class="detail-grid"><div><dt>Fecha</dt><dd>${esc(reception.movement_date)}</dd></div><div><dt>Piezas</dt><dd>${fmt(reception.quantity)}</dd></div><div><dt>Costo</dt><dd>${money(reception.cost)}</dd></div><div><dt>Stock al recibir</dt><dd>${fmt(reception.variant_stock)}</dd></div><div><dt>Documento</dt><dd>${esc(reception.document_number)}</dd></div><div><dt>Despacho interno</dt><dd>${esc(reception.internal_dispatch_id)}</dd></div><div class="wide"><dt>Nota</dt><dd>${esc(reception.note)}</dd></div></dl></section>`;
+          ? `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Periodo analizado</p><h2>${esc(dateUi(data.start_date))} a ${esc(dateUi(data.end_date))}</h2></div><span class="badge neutral">Periodo</span></div><dl class="detail-grid"><div><dt>Fecha inicial</dt><dd>${esc(dateUi(data.start_date))}</dd></div><div><dt>Fecha final</dt><dd>${esc(dateUi(data.end_date))}</dd></div><div><dt>Recepciones</dt><dd>${fmt(data.period_receptions?.length || 0)}</dd></div><div><dt>Piezas recibidas</dt><dd>${fmt(summary.piezas_recibidas_periodo ?? summary.piezas_recibidas_ultima_recepcion)}</dd></div><div><dt>Vendidas netas</dt><dd>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</dd></div><div><dt>Ajustes stock</dt><dd>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</dd></div></dl></section>`
+          : `<section class="section-card"><div class="section-header"><div><p class="section-kicker">Última recepción</p><h2>Recepción ${esc(reception.reception_id)}</h2></div><span class="badge neutral">${esc(reception.movement_type)}</span></div><dl class="detail-grid"><div><dt>Fecha</dt><dd>${esc(dateUi(reception.movement_date))}</dd></div><div><dt>Piezas</dt><dd>${fmt(reception.quantity)}</dd></div><div><dt>Costo</dt><dd>${money(reception.cost)}</dd></div><div><dt>Stock al recibir</dt><dd>${fmt(reception.variant_stock)}</dd></div><div><dt>Documento</dt><dd>${esc(reception.document_number)}</dd></div><div><dt>Despacho interno</dt><dd>${esc(reception.internal_dispatch_id)}</dd></div><div class="wide"><dt>Nota</dt><dd>${esc(reception.note)}</dd></div></dl></section>`;
         result.innerHTML = `${warning}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Resultado live · ${esc(modeTitle)}</p><h2>${esc(stock.sku || data.query)}</h2></div><span class="badge success">${esc(data.function_version)}</span></div><div class="result-layout"><div class="hero-metrics"><article class="sellthrough-panel"><div class="gauge ${hasPriorStock ? 'count-gauge' : ''}" style="--value:${hasPriorStock ? 0 : Math.max(0, Math.min(100, num(summary.sell_through_pct)))};"><div class="gauge-inner"><strong>${hasPriorStock ? fmt(summary.piezas_netas_venta_desde_ultima_recepcion) : pct(summary.sell_through_pct)}</strong><span>${hasPriorStock ? 'vendidas' : 'venta'}</span></div></div><div><p class="metric-label">${hasPriorStock ? (isPeriod ? 'Ventas del periodo' : 'Ventas desde la última recepción') : 'Sell-through por venta'}</p><p class="metric-help">${hasPriorStock ? `${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} piezas netas vendidas. El rango incluye inventario previo, por lo que no se muestra un sell-through atribuible solo a ${isPeriod ? 'sus entradas' : 'esa recepción'}.` : `${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)} piezas netas vendidas de ${fmt(summary.piezas_recibidas_ultima_recepcion)} recibidas.`}</p></div>
 </article>
 
@@ -178,10 +186,10 @@
           ? 'Fecha de recepción no disponible.'
           : receptionAgeDanger
             ? `Última recepción: ${esc(
-                reception.movement_date,
+                dateUi(reception.movement_date),
               )} · Más de 35 días`
             : `Última recepción: ${esc(
-                reception.movement_date,
+                dateUi(reception.movement_date),
               )}`
       }
     </p>
@@ -189,7 +197,7 @@
 </article>
 </div>
 
-<div class="summary-grid compact"><article class="card"><span>Recibidas</span><strong>${fmt(summary.piezas_recibidas_ultima_recepcion)}</strong><small>${receivedNote}</small></article><article class="card"><span>Vendidas netas</span><strong>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong><small>Vendidas: ${fmt(summary.piezas_vendidas_desde_ultima_recepcion)} · Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}</small></article><article class="card"><span>Consumo / ajuste</span><strong>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</strong><small>Salidas no venta que afectaron stock</small></article><article class="card"><span>Salidas stock</span><strong>${fmt(summary.piezas_salidas_stock_desde_ultima_recepcion)}</strong><small>${hasPriorStock ? `Al menos ${fmt(priorStockMinimum)} de inventario previo` : `${pct(summary.salidas_vs_recepcion_pct)} de entradas`}</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Sucursal</span><strong>${esc(stock.office_name)}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></div><p class="muted block-note">Movimientos calculados hasta ${esc(data.end_date)}. El stock actual es live de Bsale.</p></section>${context}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Movimientos por día</p><h2>Recepciones, ventas, devoluciones y ajustes</h2></div><span class="badge neutral">${fmt(timeline.length)} días</span></div><div class="timeline">${timelineHtml || '<p class="muted">Sin movimientos.</p>'}</div></section><section class="section-card muted-card"><div class="section-header"><div><p class="section-kicker">Cobertura revisada</p><h2>Qué leyó la función en Bsale</h2></div><span class="badge neutral">Diagnóstico</span></div><div class="coverage-grid"><article class="coverage-item"><span>Rango</span><strong>${esc(data.scan_start_date || data.start_date)} a ${esc(data.end_date)}</strong><p>Modo: ${esc(modeTitle)}</p></article><article class="coverage-item"><span>Recepciones revisadas</span><strong>${fmt(stats.receptions?.receptions_seen)}</strong><p>Coincidencias: ${fmt(stats.receptions?.matches)}</p></article><article class="coverage-item"><span>Documentos revisados</span><strong>${fmt(stats.documents?.documents_seen)}</strong><p>Líneas: ${fmt(stats.documents?.details_seen)} · matches: ${fmt(stats.documents?.matches)}</p></article><article class="coverage-item"><span>Consumos revisados</span><strong>${fmt(stats.consumptions?.consumptions_seen_in_date_range)}</strong><p>Líneas: ${fmt(stats.consumptions?.details_seen)} · matches: ${fmt(stats.consumptions?.matches)}</p></article><article class="coverage-item"><span>Política</span><strong>Hasta ayer</strong><p>${esc(data.data_policy)}</p></article><article class="coverage-item"><span>Errores API</span><strong>${fmt((stats.receptions?.detail_errors || []).length + (stats.documents?.detail_errors || []).length + (stats.consumptions?.detail_errors || []).length)}</strong><p>Errores acumulados.</p></article></div></section><section class="section-card"><div class="section-header"><div><p class="section-kicker">Detalle</p><h2>Movimientos detectados</h2></div><span class="badge neutral">${fmt(movements.length)} movimientos</span></div><div class="movement-list">${movementsHtml || '<p class="muted">Sin movimientos.</p>'}</div></section>`;
+<div class="summary-grid compact"><article class="card"><span>Recibidas</span><strong>${fmt(summary.piezas_recibidas_ultima_recepcion)}</strong><small>${receivedNote}</small></article><article class="card"><span>Vendidas netas</span><strong>${fmt(summary.piezas_netas_venta_desde_ultima_recepcion)}</strong><small>Vendidas: ${fmt(summary.piezas_vendidas_desde_ultima_recepcion)} · Devueltas: ${fmt(summary.piezas_devueltas_desde_ultima_recepcion)}</small></article><article class="card"><span>Consumo / ajuste</span><strong>${fmt(summary.piezas_consumidas_ajuste_stock_desde_ultima_recepcion)}</strong><small>Salidas no venta que afectaron stock</small></article><article class="card"><span>Salidas stock</span><strong>${fmt(summary.piezas_salidas_stock_desde_ultima_recepcion)}</strong><small>${hasPriorStock ? `Al menos ${fmt(priorStockMinimum)} de inventario previo` : `${pct(summary.salidas_vs_recepcion_pct)} de entradas`}</small></article><article class="card"><span>Stock actual Bsale live</span><strong>${fmt(summary.stock_actual)}</strong><small>Disponible: ${fmt(summary.stock_disponible)}</small></article><article class="card"><span>Sucursal</span><strong>${esc(stock.office_name)}</strong><small>Variant ID ${esc(data.variant_ids?.join(', '))}</small></article></div></div><p class="muted block-note">Movimientos calculados hasta ${esc(dateUi(data.end_date))}. El stock actual es live de Bsale.</p></section>${context}<section class="section-card"><div class="section-header"><div><p class="section-kicker">Movimientos por día</p><h2>Recepciones, ventas, devoluciones y ajustes</h2></div><span class="badge neutral">${fmt(timeline.length)} días</span></div><div class="timeline">${timelineHtml || '<p class="muted">Sin movimientos.</p>'}</div></section><section class="section-card muted-card"><div class="section-header"><div><p class="section-kicker">Cobertura revisada</p><h2>Qué leyó la función en Bsale</h2></div><span class="badge neutral">Diagnóstico</span></div><div class="coverage-grid"><article class="coverage-item"><span>Rango</span><strong>${esc(dateUi(data.scan_start_date || data.start_date))} a ${esc(dateUi(data.end_date))}</strong><p>Modo: ${esc(modeTitle)}</p></article><article class="coverage-item"><span>Recepciones revisadas</span><strong>${fmt(stats.receptions?.receptions_seen)}</strong><p>Coincidencias: ${fmt(stats.receptions?.matches)}</p></article><article class="coverage-item"><span>Documentos revisados</span><strong>${fmt(stats.documents?.documents_seen)}</strong><p>Líneas: ${fmt(stats.documents?.details_seen)} · matches: ${fmt(stats.documents?.matches)}</p></article><article class="coverage-item"><span>Consumos revisados</span><strong>${fmt(stats.consumptions?.consumptions_seen_in_date_range)}</strong><p>Líneas: ${fmt(stats.consumptions?.details_seen)} · matches: ${fmt(stats.consumptions?.matches)}</p></article><article class="coverage-item"><span>Política</span><strong>Hasta ayer</strong><p>${esc(data.data_policy)}</p></article><article class="coverage-item"><span>Errores API</span><strong>${fmt((stats.receptions?.detail_errors || []).length + (stats.documents?.detail_errors || []).length + (stats.consumptions?.detail_errors || []).length)}</strong><p>Errores acumulados.</p></article></div></section><section class="section-card"><div class="section-header"><div><p class="section-kicker">Detalle</p><h2>Movimientos detectados</h2></div><span class="badge neutral">${fmt(movements.length)} movimientos</span></div><div class="movement-list">${movementsHtml || '<p class="muted">Sin movimientos.</p>'}</div></section>`;
       };
 
       const downloadPdf = async () => {
@@ -359,7 +367,7 @@
 
           const footerText =
             `Generado ${new Date().toLocaleString('es-MX')} · ` +
-            `Datos hasta ${plain(data.end_date)} · ` +
+            `Datos hasta ${plain(dateUi(data.end_date))} · ` +
             `${modeTitle}`;
 
           pdf.setFont('helvetica', 'normal');
@@ -416,7 +424,7 @@
           const headerMeta =
             `${plain(stock.sku || data.query)} · ` +
             `${plain(stock.office_name)} · ` +
-            `Corte ${plain(data.end_date)}`;
+            `Corte ${plain(dateUi(data.end_date))}`;
 
           pdf.text(
             headerMeta,
@@ -589,7 +597,7 @@
             daysSinceLastReception === null
               ? 'Fecha no disponible'
               : `Última recepción: ${plain(
-                  reception.movement_date,
+                  dateUi(reception.movement_date),
                 )}`;
 
           pdf.text(
@@ -778,13 +786,13 @@
           pdf.setTextColor(dark);
 
           const receptionTitle = isPeriod
-            ? `${plain(data.start_date)} a ${plain(
-                data.end_date,
+            ? `${plain(dateUi(data.start_date))} a ${plain(
+                dateUi(data.end_date),
               )}`
             : `Recepción ${plain(
                 reception.reception_id,
               )} · ${plain(
-                reception.movement_date,
+                dateUi(reception.movement_date),
               )}`;
 
           pdf.text(
